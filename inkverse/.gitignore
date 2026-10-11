@@ -1,0 +1,9 @@
+node_modules/
+data/
+uploads/
+.env
+*.log
+tmp/
+# generated bundles (rebuild with scripts/package.js)
+inkverse.zip
+public/downloads/*.zip
