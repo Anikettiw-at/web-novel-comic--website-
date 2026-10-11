@@ -1,0 +1,31 @@
+# Render Blueprint: https://dashboard.render.com/blueprints  ->  New Blueprint Instance -> pick this repo.
+# The app lives in the inkverse/ subfolder. A persistent disk is REQUIRED (SQLite DB + uploads), which needs a paid instance.
+services:
+  - type: web
+    name: inkverse
+    runtime: node
+    plan: starter
+    rootDir: inkverse
+    buildCommand: npm ci --omit=dev
+    startCommand: node server/index.js
+    healthCheckPath: /api/config
+    autoDeploy: true
+    disk:
+      name: inkverse-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: 22.12.0
+      - key: DATA_DIR
+        value: /var/data
+      - key: UPLOAD_DIR
+        value: /var/data/uploads
+      - key: SEED_DEMO
+        value: "false"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_EMAIL
+        sync: false        # you will be prompted for these two when creating the blueprint
+      - key: ADMIN_PASSWORD
+        sync: false

@@ -87,7 +87,10 @@ docker run -d --name inkverse -p 3000:3000 \
   inkverse
 ```
 
-### Option B — Render / Railway (managed)
+### Option B0 — One-click Render Blueprint (recommended)
+This repo contains `render.yaml` at its root. In Render: **New → Blueprint** → select the repo → enter `ADMIN_EMAIL` and `ADMIN_PASSWORD` when prompted → **Apply**. It creates a Starter web service with a 1 GB persistent disk (paid; disks are not available on the free tier), generates `JWT_SECRET`, and disables demo accounts. Open the service URL and log in with the admin you entered.
+
+### Option B — Render / Railway (manual)
 1. Push this repo to GitHub, create a **Web Service** from it.
 2. Build command: `npm install` · Start command: `npm start`.
 3. Add a **persistent disk** mounted at `/var/data` (Render: Disks · Railway: Volumes).
