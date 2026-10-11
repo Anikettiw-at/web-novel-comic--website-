@@ -156,6 +156,8 @@ CREATE TABLE IF NOT EXISTS appeals (
 );
 CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, admin_id INTEGER, action TEXT, target TEXT, created_at INTEGER);
 CREATE TABLE IF NOT EXISTS blocked_words (word TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS stripe_events (id TEXT PRIMARY KEY, created_at INTEGER);   -- idempotency: one credit per Checkout session
+CREATE TABLE IF NOT EXISTS password_resets (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, expires_at INTEGER NOT NULL);
 `);
 function addColumn(table, col, def) {
   if (!db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
@@ -169,7 +171,7 @@ addColumn('earnings', 'coins', 'INTEGER NOT NULL DEFAULT 0');
 // ---- Business rules (single source of truth; exposed at /api/config) ----
 const RULES = {
   coinPacks: [
-    { id: 'p100', coins: 100, cents: 99 },
+    { id: 'p200', coins: 200, cents: 199 },
     { id: 'p500', coins: 500, cents: 449 },
     { id: 'p1200', coins: 1200, cents: 999 },
     { id: 'p2600', coins: 2600, cents: 1999 },

@@ -78,8 +78,8 @@ Run the automated checks with `npm test`.
 - [x] Payout request (minimum $50, payout email + tax confirmation, one open request)
 - [x] Admin payout approve / reject (reject releases earnings)
 - [x] Top-supporters leaderboard
-- [ ] **Stripe Checkout + webhook** for real coin purchases
-- [ ] **Stripe Connect / PayPal Payouts** for real transfers
+- [x] **Stripe Checkout + signed webhook** for real coin purchases (idempotent, amount-checked; needs your Stripe keys)
+- [ ] **Stripe Connect / PayPal Payouts** for automatic transfers (today: admin pays manually, then clicks "Mark paid")
 - [ ] Tax forms (W-9 / W-8BEN), VAT handling
 - [ ] Refund and chargeback handling (reverse earnings during hold)
 - [ ] Ad revenue sharing and creator subscriptions / memberships
@@ -89,7 +89,8 @@ Run the automated checks with `npm test`.
 - [x] Achievement badges
 - [x] Personalised recommendations (genre affinity)
 - [x] New-chapter notifications + bell
-- [ ] Email / web-push notifications
+- [x] Password-reset emails (SMTP)
+- [ ] Email / web-push notifications for new chapters
 - [ ] Creator following feed and activity timeline
 - [ ] Seasonal events, creator contests
 
@@ -101,10 +102,14 @@ Run the automated checks with `npm test`.
 - [ ] Export CSV of earnings
 
 ## Phase 9 — Quality & operations
-- [x] End-to-end API smoke test (`npm test`, 34 checks)
+- [x] End-to-end API smoke test (`npm test`, 48 checks)
 - [x] Browser verification of every page
 - [x] README, `design.md`, `tasks.md`, PDF guide
 - [ ] Unit tests, CI pipeline, load test of chat
+- [x] Automatic daily database backups (kept 7 days on the data disk)
+- [x] Render Blueprint (`render.yaml`), Dockerfile, go-live PDF
+- [x] Privacy Policy template page
+- [ ] Off-server backup copies (S3 / Backblaze)
 - [ ] Migrate SQLite → Postgres, uploads → S3/R2 + CDN, image resizing
 - [ ] Monitoring (error tracking, uptime), backups
 - [ ] Accessibility audit against WCAG 2.1 AA

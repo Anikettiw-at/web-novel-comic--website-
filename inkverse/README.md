@@ -31,7 +31,7 @@ The first start creates `data/inkverse.db` and seeds demo content.
 > These demo credentials are public. **Never deploy with them** — see §3.
 
 ```bash
-npm test             # 34 end-to-end API checks on a throwaway database
+npm test             # 48 end-to-end API checks on a throwaway database
 ```
 
 ---
@@ -52,6 +52,13 @@ All optional locally. Copy `.env.example` to `.env` and run `npm run start:env` 
 | `ADMIN_PASSWORD` | – | **Yes** (with `SEED_DEMO=false`) | Its password (8+ chars; change it after first login) |
 | `ADMIN_USERNAME` | `admin` | no | Its username |
 | `HOLD_DAYS` | `14` | no | Days creator earnings are held before they can be withdrawn |
+| `PUBLIC_URL` | request host | **Yes** | Your public https URL (used in Stripe redirects and reset emails) |
+| `STRIPE_SECRET_KEY` | – | **Yes** for real sales | `sk_test_…` / `sk_live_…`. Enables card checkout and disables the demo checkout. |
+| `STRIPE_WEBHOOK_SECRET` | – | **Yes** with Stripe | `whsec_…` from your webhook endpoint (`/api/stripe/webhook`); coins are credited only by this signed event |
+| `DEMO_PAYMENTS` | `true` when no Stripe key | set `false` | `false` removes the free demo checkout |
+| `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS` `SMTP_SECURE` | – | **Yes** for password reset | Any SMTP provider (Brevo, Resend, Mailgun, SendGrid, Gmail app password) |
+| `MAIL_FROM` | `SMTP_USER` | recommended | e.g. `InkVerse <no-reply@yourdomain.com>` |
+| `BACKUP_KEEP` | `7` | no | Daily DB backups kept in `DATA_DIR/backups` |
 
 Business rules (revenue split, payout minimum, coin packs, check-in rewards) live in `server/db.js → RULES` and are also shown in the UI automatically.
 

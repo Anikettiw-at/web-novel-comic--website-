@@ -11,6 +11,7 @@ const rateLimit = require('express-rate-limit');
 const { WebSocketServer } = require('ws');
 const { db, RULES } = require('./db');
 const { screenText, fileReport, addStrike } = require('./moderation');
+const payments = require('./payments');
 
 const PORT = process.env.PORT || 3000;
 const DAY = 24 * 3600 * 1000;
@@ -42,6 +43,7 @@ app.use(helmet({
     },
   },
 }));
+payments.mountWebhook(app); // raw body required for signature check, so it must precede express.json
 app.use(express.json({ limit: '2mb' }));
 app.use('/api/', rateLimit({ windowMs: 60_000, limit: 400, standardHeaders: true, legacyHeaders: false }));
 const authLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 30, message: { error: 'Too many attempts, try later.' } });
@@ -103,7 +105,7 @@ const upload = multer({
 app.use('/uploads', express.static(upDir, { maxAge: '7d', setHeaders: r => r.setHeader('X-Content-Type-Options', 'nosniff') }));
 
 // ---------- config & auth ----------
-app.get('/api/config', (req, res) => res.json({ ...RULES, creatorShareUnlockPct: RULES.creatorShareUnlock * 100 }));
+app.get('/api/config', (req, res) => res.json({ ...RULES, creatorShareUnlockPct: RULES.creatorShareUnlock * 100, payments: payments.paymentsMode() }));
 
 app.post('/api/auth/register', authLimiter, wrap(async (req, res) => {
   const username = clean(req.body.username, 24), email = clean(req.body.email, 120).toLowerCase(), password = String(req.body.password || '');
@@ -401,6 +403,7 @@ app.get('/api/wallet', needAuth, (req, res) => {
 });
 // NOTE: demo checkout. Replace with Stripe Checkout + webhook (see README "Going to production").
 app.post('/api/wallet/buy', needAuth, (req, res) => {
+  if (payments.paymentsMode() !== 'demo') return fail(res, 403, 'Demo checkout is disabled. Use card checkout.');
   const p = RULES.coinPacks.find(x => x.id === req.body.pack); if (!p) return fail(res, 400, 'Unknown pack.');
   db.transaction(() => {
     db.prepare('UPDATE users SET coins=coins+? WHERE id=?').run(p.coins, req.user.id);
@@ -526,7 +529,10 @@ app.post('/api/admin/dmca/:id', admin, (req, res) => {
 app.get('/api/admin/users', admin, (req, res) => res.json(db.prepare('SELECT id,username,email,role,strikes,muted_until,banned,created_at FROM users WHERE username LIKE ? ORDER BY id DESC LIMIT 50').all(`%${clean(req.query.q, 40)}%`)));
 app.post('/api/admin/users/:id', admin, (req, res) => {
   const id = Number(req.params.id), a = req.body.action;
-  if (db.prepare('SELECT role FROM users WHERE id=?').get(id)?.role === 'admin') return fail(res, 400, 'Cannot act on admins.');
+  const target = db.prepare('SELECT role, banned FROM users WHERE id=?').get(id); if (!target) return fail(res, 404, 'User not found.');
+  if (a === 'promote' && target.role !== 'admin' && !target.banned) { db.prepare("UPDATE users SET role='admin' WHERE id=?").run(id); audit(req, 'user_promote', `user#${id}`); return res.json({ ok: true }); }
+  if (a === 'demote' && target.role === 'admin' && id !== req.user.id) { db.prepare("UPDATE users SET role='reader' WHERE id=?").run(id); audit(req, 'user_demote', `user#${id}`); return res.json({ ok: true }); }
+  if (target.role === 'admin') return fail(res, 400, 'Cannot act on admins (use demote, and not on yourself).');
   audit(req, 'user_' + a, `user#${id}`);
   if (a === 'ban') db.prepare('UPDATE users SET banned=1 WHERE id=?').run(id);
   if (a === 'unban') db.prepare('UPDATE users SET banned=0, strikes=0, muted_until=0 WHERE id=?').run(id);
@@ -535,11 +541,14 @@ app.post('/api/admin/users/:id', admin, (req, res) => {
 });
 
 const audit = (req, action, target) => db.prepare('INSERT INTO audit(admin_id,action,target,created_at) VALUES(?,?,?,?)').run(req.user.id, action, String(target), now());
+payments.mountRoutes(app, { needAuth, fail });
+require('./account').mount(app, { authLimiter, fail });
 require('./advanced')(app, { needAuth, needRole, fail, clean, notify, audit, seriesSelect, shapeSeries });
 
 // ---------- downloads page: lists whatever `npm run build:downloads` produced ----------
 const dlDir = path.join(__dirname, '..', 'public', 'downloads');
 const DL_INFO = {
+  'InkVerse-Go-Live-Steps.pdf': ['PDF', 'Go-live steps: deploy & make it real', 'START HERE. Exact steps you must do: Render, Stripe, email, domain, payouts, legal, backups, launch tests, env variables.'],
   'InkVerse-Guide.pdf': ['PDF', 'Working guide & details', 'How InkVerse works for readers, creators and admins; business rules, moderation, architecture and design.'],
   'README.md': ['README', 'Setup & deployment guide', 'Install, environment variables, Docker / Render / VPS deployment, pre-launch checklist, troubleshooting.'],
   'design.md': ['DESIGN', 'design.md', 'Research summary, features, business rules, architecture, design system and motion spec.'],
@@ -615,5 +624,17 @@ function releaseTick() {
 setInterval(releaseTick, 30_000); releaseTick();
 
 require('./seed').run();
+// ---------- automatic daily backups (kept in DATA_DIR/backups; also copy them off-server!) ----------
+async function backupTick() {
+  try {
+    const dir = path.join(dataDir, 'backups'); fs.mkdirSync(dir, { recursive: true });
+    const f = path.join(dir, `inkverse-${new Date().toISOString().slice(0, 10)}.db`);
+    if (!fs.existsSync(f)) { await db.backup(f); console.log('Backup written:', f); }
+    const keep = Number(process.env.BACKUP_KEEP || 7);
+    fs.readdirSync(dir).filter(x => x.endsWith('.db')).sort().reverse().slice(keep).forEach(x => fs.unlinkSync(path.join(dir, x)));
+  } catch (e) { console.error('Backup failed:', e.message); }
+}
+if (require.main === module) { backupTick(); setInterval(backupTick, 6 * 3600_000); }
+
 if (require.main === module) server.listen(PORT, () => console.log(`InkVerse running → http://localhost:${PORT}`));
 module.exports = { app, server };

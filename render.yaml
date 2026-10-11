@@ -23,6 +23,8 @@ services:
         value: /var/data/uploads
       - key: SEED_DEMO
         value: "false"
+      - key: DEMO_PAYMENTS
+        value: "false"     # no free demo coins on a real site; add STRIPE_* in the dashboard to enable card checkout
       - key: JWT_SECRET
         generateValue: true
       - key: ADMIN_EMAIL

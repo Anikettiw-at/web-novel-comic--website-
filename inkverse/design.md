@@ -38,7 +38,7 @@ Sources: Publishers Weekly (Webtoon Fast Pass interview), Taddy blog on Webtoon 
 
 | Rule | Value | Why it keeps everyone in profit |
 |---|---|---|
-| Coin packs | 100/$0.99 · 500/$4.49 · 1200/$9.99 · 2600/$19.99 | Bulk discount nudges larger purchases. |
+| Coin packs | 200/$1.99 · 500/$4.49 · 1200/$9.99 · 2600/$19.99 | Bulk discount nudges larger purchases. |
 | Net coin value | **0.8¢** per coin | After payment-processor fees and taxes (price ≈ 1¢/coin). Creator share is computed on *net*, so the platform never pays out money it didn't keep. |
 | Creator share (unlocks) | **70%** of net value | Industry-competitive; platform keeps 30% for hosting, moderation, payments. |
 | Creator share (tips) | **90%** | Tips are goodwill; low platform cut encourages support. |

@@ -1,6 +1,7 @@
 // End-to-end API smoke test: runs against a throwaway database on a random port.  `npm test`
 process.env.DB_FILE = require('path').join(require('os').tmpdir(), `inkverse-test-${Date.now()}.db`);
 process.env.HOLD_DAYS = '0';
+process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test_secret';
 const WebSocket = require('ws');
 const { server } = require('./index');
 const assert = require('assert');
@@ -79,7 +80,34 @@ server.listen(0, async () => {
     ws2.send(JSON.stringify({ type: 'join', channel: ch.id, token: token.nova })); await new Promise(r => setTimeout(r, 200));
     ws2.send(JSON.stringify({ type: 'msg', body: 'you blorpfish' })); await new Promise(r => setTimeout(r, 300));
     ok('admin-added word is filtered live', got2.some(m => m.type === 'msg' && m.message.body.includes('*******')) ); ws2.close();
+    const rid = (await call('GET', '/me', null, 'reader')).data.id;
+    await call('POST', '/admin/users/' + rid, { action: 'promote' }, 'admin'); ok('admin can promote a moderator', (await call('GET', '/admin/overview', null, 'reader')).status === 200);
+    await call('POST', '/admin/users/' + rid, { action: 'demote' }, 'admin'); ok('admin can demote a moderator', (await call('GET', '/admin/overview', null, 'reader')).status === 403);
     ok('audit log records admin actions', (await call('GET', '/admin/audit', null, 'admin')).data.length >= 3);
+
+    // ---- Stripe webhook (signature, idempotency, amount check) & password reset
+    const crypto = require('crypto');
+    const hook = async (obj, secret = 'whsec_test_secret') => {
+      const raw = JSON.stringify(obj), t = Math.floor(Date.now() / 1000), sig = crypto.createHmac('sha256', secret).update(`${t}.${raw}`).digest('hex');
+      const r = await fetch(base + '/api/stripe/webhook', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Stripe-Signature': `t=${t},v1=${sig}` }, body: raw });
+      return r.status;
+    };
+    const me0 = (await call('GET', '/me', null, 'reader')).data; const coins0 = (await call('GET', '/wallet', null, 'reader')).data.coins;
+    const evt = (id, amount) => ({ type: 'checkout.session.completed', data: { object: { id, payment_status: 'paid', client_reference_id: String(me0.id), metadata: { pack: 'p500' }, amount_total: amount, currency: 'usd' } } });
+    ok('webhook with bad signature rejected', (await hook(evt('cs_bad', 449), 'wrong_secret')) === 400);
+    ok('valid webhook accepted', (await hook(evt('cs_1', 449))) === 200);
+    ok('coins credited by webhook', (await call('GET', '/wallet', null, 'reader')).data.coins === coins0 + 500);
+    await hook(evt('cs_1', 449)); ok('replayed webhook does not double-credit', (await call('GET', '/wallet', null, 'reader')).data.coins === coins0 + 500);
+    await hook(evt('cs_2', 1)); ok('wrong amount is ignored', (await call('GET', '/wallet', null, 'reader')).data.coins === coins0 + 500);
+    ok('checkout refused when Stripe not configured', (await call('POST', '/wallet/checkout', { pack: 'p200' }, 'reader')).status === 400);
+    let captured = ''; const origLog = console.log; console.log = (...a) => { captured += a.join(' '); }; 
+    await call('POST', '/auth/forgot', { email: 'reader@inkverse.test' }); await new Promise(r => setTimeout(r, 200)); console.log = origLog;
+    const tok = (captured.match(/reset\?token=([a-f0-9]{64})/) || [])[1]; ok('reset email generated', !!tok);
+    ok('unknown email gives same response', (await call('POST', '/auth/forgot', { email: 'nobody@nowhere.io' })).status === 200);
+    ok('bad reset token rejected', (await call('POST', '/auth/reset', { token: 'x'.repeat(64), password: 'NewPassw0rd!' })).status === 400);
+    ok('password reset works', (await call('POST', '/auth/reset', { token: tok, password: 'NewPassw0rd!' })).status === 200);
+    ok('login with new password', (await call('POST', '/auth/login', { login: 'ReaderRay', password: 'NewPassw0rd!' })).status === 200);
+    ok('reset token is single-use', (await call('POST', '/auth/reset', { token: tok, password: 'Another1234!' })).status === 400);
 
     // DMCA takedown
     ok('dmca claim filed', (await call('POST', '/dmca', { series_id: starfall.id, claimant: 'Acme', email: 'a@b.co', details: 'This is my original work and it was copied without permission.' })).status === 200);

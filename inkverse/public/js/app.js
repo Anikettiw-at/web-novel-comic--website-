@@ -72,7 +72,7 @@ function renderNav() {
   bindSuggest();
 }
 function renderFooter() {
-  $('#footer').innerHTML = `<div><a href="#/terms">Terms & Community Guidelines</a><a href="#/creators">Creator Program</a><a href="#/dmca">Copyright / DMCA</a><a href="#/downloads">⬇ Downloads</a></div><p style="margin-top:12px">© ${new Date().getFullYear()} InkVerse — demo platform. Payments are simulated.</p>`;
+  $('#footer').innerHTML = `<div><a href="#/terms">Terms & Community Guidelines</a><a href="#/creators">Creator Program</a><a href="#/dmca">Copyright / DMCA</a><a href="#/privacy">Privacy</a><a href="#/downloads">⬇ Downloads</a></div><p style="margin-top:12px">© ${new Date().getFullYear()} InkVerse — demo platform. Payments are simulated.</p>`;
 }
 const showNotifs = guard(async () => {
   const list = S.notifs;
@@ -102,9 +102,11 @@ function authModal(mode = 'login', after) {
   ${mode === 'register' ? `<label>I want to<select name="role"><option value="reader">Read & chat (Reader)</option><option value="creator">Read, chat & publish for pay (Creator)</option></select></label>
   <label class="check"><input type="checkbox" name="adult"> I am 18+ (enables mature series)</label>
   <label class="check"><input type="checkbox" name="terms" required> I accept the <a href="#/terms" target="_blank" style="text-decoration:underline">Terms & Community Guidelines</a></label>` : ''}
-  <button class="btn">${mode === 'login' ? 'Log in' : 'Create account'}</button></form>
+  <button class="btn">${mode === 'login' ? 'Log in' : 'Create account'}</button>${mode === 'login' ? '<a href="#" id="fg" class="muted" style="font-size:13px;text-align:center;text-decoration:underline">Forgot your password?</a>' : ''}</form>
   <p class="muted" style="margin-top:14px;font-size:13px">${mode === 'login' ? `New here? <a href="#" id="sw" style="text-decoration:underline">Create an account</a>` : `Have an account? <a href="#" id="sw" style="text-decoration:underline">Log in</a>`}</p>`, (m, close) => {
     $('#sw', m).onclick = e => { e.preventDefault(); close(); authModal(mode === 'login' ? 'register' : 'login', after); };
+    $('#fg', m)?.addEventListener('click', e => { e.preventDefault(); close(); modal(`<h2>Reset password</h2><form class="form" id="ff"><label>Account email<input name="email" type="email" required></label><button class="btn">Send reset link</button></form>`, (mm, c2) => {
+      $('#ff', mm).onsubmit = guard(async ev => { ev.preventDefault(); await api('/auth/forgot', { method: 'POST', body: { email: ev.target.email.value } }); c2(); toast('If that email exists, a reset link is on its way.', 'ok'); }); }); });
     $('#af', m).onsubmit = guard(async e => {
       e.preventDefault(); const f = new FormData(e.target);
       const body = mode === 'login' ? { login: f.get('login'), password: f.get('password') } : { username: f.get('username'), email: f.get('email'), password: f.get('password'), role: f.get('role'), adult: f.get('adult') === 'on', acceptTerms: f.get('terms') === 'on' };
@@ -335,14 +337,18 @@ on(/^\/library$/, async () => {
 });
 
 // ---------------- WALLET ----------------
-on(/^\/wallet$/, async () => {
+on(/^\/wallet$/, async (m, p) => {
   if (!S.user) throw Object.assign(new Error('Log in to open your wallet'), { status: 401 });
   const w = await api('/wallet');
   const html = `<div class="wrap"><div class="section-head" style="margin-top:0"><h2>Wallet</h2></div><div class="stats"><div class="stat"><span class="muted">Your coins</span><b>🪙 ${w.coins}</b></div><div class="stat"><span class="muted">Check-in streak</span><b>🔥 ${S.user.streak}</b><button class="btn small" id="ck" style="margin-top:8px" ${S.user.can_checkin ? '' : 'disabled'}>${S.user.can_checkin ? 'Claim today\'s coins' : 'Claimed ✓'}</button></div></div>
-  <p class="muted" style="margin-bottom:16px">Coins unlock early-access chapters and tip creators. <b>${S.cfg.creatorShareUnlockPct}%</b> of what you spend on unlocks goes to the creator. <i>Demo checkout — no real money is charged.</i></p>
+  <p class="muted" style="margin-bottom:16px">Coins unlock early-access chapters and tip creators. <b>${S.cfg.creatorShareUnlockPct}%</b> of what you spend on unlocks goes to the creator. ${S.cfg.payments === 'demo' ? '<i>Demo checkout — no real money is charged.</i>' : S.cfg.payments === 'stripe' ? 'Secure card checkout by Stripe.' : '<b>Coin purchases are not enabled yet.</b>'}</p>
   <div class="packs">${w.packs.map(p => `<div class="pack" data-p="${p.id}"><div class="c">🪙 ${p.coins}</div><div style="font-weight:700;font-size:20px">${money(p.cents)}</div><small class="muted">${(p.cents / p.coins).toFixed(2)}¢ / coin</small><br><button class="btn small" style="margin-top:12px">Buy</button></div>`).join('')}</div>
   <div class="section-head"><h2>History</h2></div><div class="card" style="padding:6px 14px"><table><thead><tr><th>When</th><th>Type</th><th>Coins</th><th>Note</th></tr></thead><tbody>${w.history.map(h => `<tr><td>${dt(h.created_at)}</td><td>${h.type.replace('_', ' ')}</td><td>${h.coins > 0 ? '+' : ''}${h.coins || ''}${h.cents && h.type === 'purchase' ? ` (${money(h.cents)})` : ''}</td><td>${esc(h.note)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No activity yet.</td></tr>'}</tbody></table></div></div>`;
-  return { html, mount(v) { $('#ck', v)?.addEventListener('click', async e => { await checkin(e); setTimeout(route, 900); }); $$('.pack', v).forEach(p => p.onclick = guard(async e => { const r = await api('/wallet/buy', { method: 'POST', body: { pack: p.dataset.p } }); S.user.coins = r.coins; coinBurst(e.clientX, e.clientY); toast('Coins added! 🪙', 'ok'); setTimeout(route, 700); })); } };
+  return { html, mount(v) { $('#ck', v)?.addEventListener('click', async e => { await checkin(e); setTimeout(route, 900); }); if (p.get('paid')) { toast('Payment received — your coins will appear in a moment 🪙', 'ok'); setTimeout(async () => { await refreshMe(); renderNav(); }, 2500); }
+    $$('.pack', v).forEach(pk => pk.onclick = guard(async e => {
+      if (S.cfg.payments === 'stripe') { const r = await api('/wallet/checkout', { method: 'POST', body: { pack: pk.dataset.p } }); location.href = r.url; return; }
+      if (S.cfg.payments !== 'demo') return toast('Coin purchases are not enabled yet.', 'err');
+      const r = await api('/wallet/buy', { method: 'POST', body: { pack: pk.dataset.p } }); S.user.coins = r.coins; coinBurst(e.clientX, e.clientY); toast('Coins added! 🪙', 'ok'); setTimeout(route, 700); })); } };
 });
 
 // ---------------- STUDIO ----------------
@@ -448,7 +454,7 @@ on(/^\/admin$/, async (m, p) => {
     const wordCall = guard(async (word, remove) => { await api('/admin/words', { method: 'POST', body: { word, remove } }); location.hash = '#/admin?t=words'; route(); });
     $('#wf', v).onsubmit = e => { e.preventDefault(); wordCall(e.target.word.value, false); };
     $$('[data-rw]', v).forEach(a => a.onclick = e => { e.preventDefault(); wordCall(a.dataset.rw, true); });
-    const loadUsers = guard(async q => { const us = await api('/admin/users?q=' + encodeURIComponent(q)); $('#ul').innerHTML = `<div class="card" style="padding:6px 14px"><table><thead><tr><th>User</th><th>Role</th><th>Strikes</th><th>Status</th><th></th></tr></thead><tbody>${us.map(u => `<tr><td>${esc(u.username)}<br><small class="muted">${esc(u.email)}</small></td><td>${u.role}</td><td>${u.strikes}</td><td>${u.banned ? '⛔ banned' : u.muted_until > Date.now() ? '🔇 muted' : 'ok'}</td><td>${u.role === 'admin' ? '' : u.banned ? `<button class="btn small ghost" data-uid="${u.id}" data-a="unban">Unban</button>` : `<button class="btn small ghost" data-uid="${u.id}" data-a="unmute">Unmute</button> <button class="btn small danger" data-uid="${u.id}" data-a="ban">Ban</button>`}</td></tr>`).join('')}</tbody></table></div>`; $$('[data-uid]').forEach(b => b.onclick = guard(async () => { await api('/admin/users/' + b.dataset.uid, { method: 'POST', body: { action: b.dataset.a } }); toast('Updated', 'ok'); loadUsers($('#uq').value); })); });
+    const loadUsers = guard(async q => { const us = await api('/admin/users?q=' + encodeURIComponent(q)); $('#ul').innerHTML = `<div class="card" style="padding:6px 14px"><table><thead><tr><th>User</th><th>Role</th><th>Strikes</th><th>Status</th><th></th></tr></thead><tbody>${us.map(u => `<tr><td>${esc(u.username)}<br><small class="muted">${esc(u.email)}</small></td><td>${u.role}</td><td>${u.strikes}</td><td>${u.banned ? '⛔ banned' : u.muted_until > Date.now() ? '🔇 muted' : 'ok'}</td><td>${u.role === 'admin' ? (u.id === S.user.id ? '<span class="muted">you</span>' : `<button class="btn small ghost" data-uid="${u.id}" data-a="demote">Remove moderator</button>`) : u.banned ? `<button class="btn small ghost" data-uid="${u.id}" data-a="unban">Unban</button>` : `<button class="btn small ghost" data-uid="${u.id}" data-a="unmute">Unmute</button> <button class="btn small danger" data-uid="${u.id}" data-a="ban">Ban</button> <button class="btn small" data-uid="${u.id}" data-a="promote">Make moderator</button>`}</td></tr>`).join('')}</tbody></table></div>`; $$('[data-uid]').forEach(b => b.onclick = guard(async () => { await api('/admin/users/' + b.dataset.uid, { method: 'POST', body: { action: b.dataset.a } }); toast('Updated', 'ok'); loadUsers($('#uq').value); })); });
     $('#uf', v).onsubmit = e => { e.preventDefault(); loadUsers($('#uq').value); }; if (tab === 'users') loadUsers('');
   } };
 });
@@ -467,6 +473,13 @@ on(/^\/downloads$/, async () => {
   return `<div class="wrap" style="max-width:900px"><div class="section-head" style="margin-top:0"><h2>⬇ Downloads</h2></div><p class="muted" style="margin-bottom:18px">Everything you need to understand, run and deploy InkVerse.</p>
   ${files.length ? files.map(f => `<div class="chapter in"><span class="ch-tag ${f.kind === 'PDF' ? 'spoilers' : f.kind === 'ZIP' ? 'fan-art' : f.kind === 'README' ? 'recs' : 'theories'}">${esc(f.kind)}</span><span class="t">${esc(f.title)}<br><small class="muted">${esc(f.desc)} · ${kb(f.bytes)}</small></span><a class="btn small" href="${esc(f.url)}" download>Download</a></div>`).join('') : '<div class="card"><p>No files built yet. Run <code>npm run build:downloads</code> on the server.</p></div>'}</div>`;
 });
+
+on(/^\/reset$/, async (m, p) => ({ html: `<div class="wrap" style="max-width:480px"><div class="section-head" style="margin-top:0"><h2>Choose a new password</h2></div><form class="form card" id="rf2"><label>New password (8+ characters)<input name="password" type="password" minlength="8" required autocomplete="new-password"></label><button class="btn">Update password</button></form></div>`,
+  mount(v) { $('#rf2', v).onsubmit = guard(async e => { e.preventDefault(); await api('/auth/reset', { method: 'POST', body: { token: p.get('token'), password: e.target.password.value } }); toast('Password updated — please log in.', 'ok'); location.hash = '#/'; authModal(); }); } }));
+on(/^\/privacy$/, async () => doc('Privacy Policy', `<p class="muted">Template for a demo platform — have it reviewed by a lawyer and adapt it before launch.</p><h3>What we collect</h3><ul style="padding-left:20px"><li>Account data: username, email, hashed password, optional bio, 18+ confirmation.</li><li>Activity: reading progress, follows, likes, ratings, comments, chat messages, reports and moderation actions.</li><li>Payments: purchases are processed by Stripe; we store the pack, amount and a payment reference — never card numbers. Creators provide a payout email.</li></ul>
+  <h3>How we use it</h3><p>To run the service, personalise recommendations, keep the community safe (moderation, abuse prevention), process payments and payouts, and send account emails such as password resets.</p>
+  <h3>Sharing</h3><p>We do not sell personal data. We share it only with service providers needed to operate InkVerse (hosting, payments, email) and when the law requires it. Usernames, comments and chat messages are visible to other users.</p>
+  <h3>Your choices</h3><p>You can edit your profile, and request export or deletion of your account by contacting support. Some records (payments, moderation logs) may be retained as required by law.</p><h3>Security & cookies</h3><p>Passwords are hashed; connections use HTTPS. We store a login token and your theme/reader preferences in your browser's local storage; we do not use advertising cookies.</p>`));
 
 // ---------------- boot ----------------
 window.addEventListener('hashchange', route);
