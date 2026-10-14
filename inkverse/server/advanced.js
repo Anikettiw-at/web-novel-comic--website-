@@ -10,7 +10,7 @@ module.exports = function mount(app, { needAuth, needRole, fail, clean, notify, 
   app.post('/api/chapters/:id/react', needAuth, (req, res) => {
     const emoji = req.body.emoji; if (!RULES.reactions.includes(emoji)) return fail(res, 400, 'Unsupported reaction.');
     const id = Number(req.params.id);
-    if (!db.prepare('SELECT 1 FROM chapters WHERE id=? AND publish_at<=?').get(id, now())) return fail(res, 404, 'Chapter not found.');
+    if (!db.prepare("SELECT 1 FROM chapters WHERE id=? AND publish_at<=? AND draft=0 AND review='ok'").get(id, now())) return fail(res, 404, 'Chapter not found.');
     const had = db.prepare('DELETE FROM reactions WHERE chapter_id=? AND user_id=? AND emoji=?').run(id, req.user.id, emoji).changes;
     if (!had) db.prepare('INSERT INTO reactions VALUES(?,?,?)').run(id, req.user.id, emoji);
     res.json({ on: !had });

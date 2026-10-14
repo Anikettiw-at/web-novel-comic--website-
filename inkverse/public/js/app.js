@@ -48,7 +48,8 @@ const skeleton = n => `<div class="grid">${'<div class="shimmer"></div>'.repeat(
 // ---------------- navigation ----------------
 async function refreshMe() {
   if (!S.token) { S.user = null; return; }
-  try { S.user = await api('/me'); S.notifs = await api('/notifications'); } catch { S.token = null; S.user = null; localStorage.removeItem('iv_token'); }
+  try { S.user = await api('/me'); S.notifs = await api('/notifications'); }
+  catch (e) { if (e.status === 401) { S.token = null; S.user = null; localStorage.removeItem('iv_token'); } }   // network errors keep you signed in (offline reading)
 }
 function renderNav() {
   const u = S.user, unread = S.notifs.filter(n => !n.read).length, cur = location.hash.split('/')[1] || '';
@@ -56,11 +57,11 @@ function renderNav() {
   $('#nav').innerHTML = `
     <button class="pill burger" id="burger" aria-label="Menu">☰</button>
     <a class="logo" href="#/"><b>INK</b>VERSE</a>
-    <nav class="nav-links" id="links">${link('', 'Home')}${link('browse', 'Browse')}${link('channels', 'Channels 💬')}${u ? link('library', 'Library') : ''}${u && u.role !== 'reader' ? link('studio', 'Studio ✏️') : ''}${u?.role === 'admin' ? link('admin', 'Admin 🛡️') : ''}</nav>
+    <nav class="nav-links" id="links">${link('', 'Home')}${link('browse', 'Browse')}${link('charts', 'Charts 🏆')}${link('channels', 'Channels 💬')}${u ? link('library', 'Library') : ''}${u && u.role !== 'reader' ? link('studio', 'Studio ✏️') : ''}${u?.role === 'admin' ? link('admin', 'Admin 🛡️') : ''}</nav>
     <div class="nav-right">
       <form class="search" id="sform"><input id="q" type="search" placeholder="Search comics & novels" aria-label="Search"></form>
       <button class="pill" id="theme" title="Toggle theme" aria-label="Toggle theme">🌓</button>
-      ${u ? `<a class="pill" href="#/wallet" title="Wallet">🪙 <span>${u.coins}</span></a>
+      ${u ? `<a class="pill ${u.premium ? 'pro' : ''}" href="#/premium" title="${u.premium ? 'Premium member' : 'Go Premium'}">⭐ <span class="lbl">${u.premium ? 'Premium' : 'Go Premium'}</span></a><a class="pill" href="#/wallet" title="Wallet">🪙 <span>${u.coins}</span></a>
         <button class="pill" id="bell" aria-label="Notifications">🔔${unread ? `<span class="badge">${unread}</span>` : ''}</button>
         <button class="pill" id="me">${esc(u.username)} <span class="lbl muted">▾</span></button>` : `<button class="btn small" id="login">Log in / Sign up</button>`}
     </div>`;
@@ -72,7 +73,7 @@ function renderNav() {
   bindSuggest();
 }
 function renderFooter() {
-  $('#footer').innerHTML = `<div><a href="#/terms">Terms & Community Guidelines</a><a href="#/creators">Creator Program</a><a href="#/dmca">Copyright / DMCA</a><a href="#/privacy">Privacy</a><a href="#/downloads">⬇ Downloads</a></div><p style="margin-top:12px">© ${new Date().getFullYear()} InkVerse — demo platform. Payments are simulated.</p>`;
+  $('#footer').innerHTML = `<div><a href="#/terms">Terms & Community Guidelines</a><a href="#/creators">Creator Program</a><a href="#/dmca">Copyright / DMCA</a><a href="#/privacy">Privacy</a><a href="#/downloads">⬇ Downloads</a></div><p style="margin-top:12px">© ${new Date().getFullYear()} InkVerse${S.cfg.payments === 'demo' ? ' — demo mode: payments are simulated.' : '.'}</p>`;
 }
 const showNotifs = guard(async () => {
   const list = S.notifs;
@@ -85,13 +86,18 @@ function showMenu() {
   <form class="form" id="prof" style="margin-top:14px"><label>Bio<textarea name="bio" maxlength="300">${esc(u.bio)}</textarea></label>
   <label class="check"><input type="checkbox" name="adult" ${u.adult ? 'checked' : ''}> I am 18 or older (needed to view mature series)</label>
   <button class="btn">Save profile</button></form>
+  <div class="row" style="margin-top:14px"><span class="chip ${u.premium ? 'active' : ''}">${u.premium ? '⭐ Premium' : 'Free plan'}</span><a class="btn ghost small" href="#/premium" id="m-prem">${u.premium ? 'Manage plan' : 'Upgrade'}</a><a class="btn ghost small" href="#/highlights" id="m-hl">🖍 My highlights</a><button type="button" class="btn ghost small" id="m-sec">🔐 Security & data</button></div>
+  ${u.email_verified ? '' : '<p class="muted" style="margin-top:10px;font-size:13px">✉️ Email not confirmed. <a href="#" id="m-ver" style="text-decoration:underline">Resend confirmation link</a></p>'}
   <h3 style="margin-top:18px">🏅 Achievements</h3><div id="bdg" class="row" style="margin-top:8px"><span class="muted">Loading…</span></div>
   ${u.strikes || u.muted_until > Date.now() ? `<h3 style="margin-top:18px">⚖️ Appeal a strike</h3><form class="form" id="apf" style="margin-top:8px"><textarea name="text" minlength="20" maxlength="1000" placeholder="Explain why the moderation action was a mistake…" required></textarea><button class="btn ghost small">Submit appeal</button></form>` : ''}
   <div class="row" style="margin-top:14px">${u.role === 'reader' ? '<button class="btn ghost" id="bc">Become a creator ✏️</button>' : ''}<button class="btn ghost" id="lo">Log out</button></div>`, (m, close) => {
     api('/me/badges').then(b => { $('#bdg', m).innerHTML = b.map(x => `<span class="chip ${x.earned ? 'active' : ''}" title="${esc(x.desc)}" style="${x.earned ? '' : 'opacity:.45;filter:grayscale(1)'}">${x.icon} ${esc(x.name)}</span>`).join(''); }).catch(() => {});
     $('#apf', m)?.addEventListener('submit', guard(async e => { e.preventDefault(); await api('/appeals', { method: 'POST', body: { text: e.target.text.value } }); toast('Appeal submitted. A moderator will review it.', 'ok'); close(); }));
     $('#prof', m).onsubmit = guard(async e => { e.preventDefault(); const f = new FormData(e.target); S.user = await api('/me', { method: 'PATCH', body: { bio: f.get('bio'), adult: f.get('adult') === 'on' } }); toast('Profile saved', 'ok'); close(); renderNav(); });
-    $('#lo', m).onclick = () => { localStorage.removeItem('iv_token'); S.token = null; S.user = null; S.notifs = []; close(); renderNav(); route(); };
+    $$('#m-prem,#m-hl', m).forEach(a => a.addEventListener('click', close));
+    $('#m-sec', m).onclick = () => { close(); IV.securityModal(); };
+    $('#m-ver', m)?.addEventListener('click', guard(async e => { e.preventDefault(); const r = await api('/auth/resend-verification', { method: 'POST' }); toast(r.sent ? 'Confirmation email sent.' : 'Email delivery is not configured on this server yet.', r.sent ? 'ok' : 'err'); }));
+    $('#lo', m).onclick = () => { localStorage.removeItem('iv_token'); S.token = null; S.user = null; S.notifs = []; try { caches.delete('iv-offline'); } catch {} close(); renderNav(); route(); };
     $('#bc', m)?.addEventListener('click', guard(async () => { S.user = await api('/me/become-creator', { method: 'POST' }); toast('Welcome, creator! Open Studio to publish.', 'ok'); close(); renderNav(); location.hash = '#/studio'; }));
   });
 }
@@ -118,13 +124,14 @@ function authModal(mode = 'login', after) {
 const needLogin = () => { if (!S.user) { authModal(); return false; } return true; };
 
 // ---------------- router ----------------
-const routes = [];
+const routes = []; const leave = [];
 const on = (re, fn) => routes.push([re, fn]);
 let routeToken = 0;
 async function route() {
   const view = $('#view'); const t = ++routeToken;
   const [path, qs] = (location.hash.slice(1) || '/').split('?'); const params = new URLSearchParams(qs || '');
-  window.scrollTo({ top: 0 }); $('#progress').style.width = '0'; document.body.classList.remove('sepia');
+  for (const f of leave.splice(0)) try { f(); } catch {}
+  window.scrollTo({ top: 0 }); $('#progress').style.width = '0'; document.body.classList.remove('sepia'); delete document.body.dataset.reader;
   if (S.ws && !path.startsWith('/channel/')) { S.ws.close(); S.ws = null; }
   renderNav();
   for (const [re, fn] of routes) {
@@ -190,31 +197,37 @@ on(/^\/?$/, async () => {
 
 // ---------------- BROWSE ----------------
 on(/^\/browse$/, async (m, p) => {
-  const f = { q: p.get('q') || '', type: p.get('type') || '', genre: p.get('genre') || '', sort: p.get('sort') || 'trending' };
+  const f = { q: p.get('q') || '', type: p.get('type') || '', genre: p.get('genre') || '', sort: p.get('sort') || 'trending', status: p.get('status') || '', monetization: p.get('monetization') || '', language: p.get('language') || '', tag: p.get('tag') || '' };
   const list = await api('/series?' + new URLSearchParams(Object.entries(f).filter(([, v]) => v)));
   const q = o => '#/browse?' + new URLSearchParams(Object.entries({ ...f, ...o }).filter(([, v]) => v));
+  setTimeout(() => { const l = $('#lang'); if (l) l.onchange = () => { location.hash = q({ language: l.value }); }; }, 0);
   return `<div class="wrap"><div class="section-head" style="margin-top:0"><h2>Browse${f.q ? ` “${esc(f.q)}”` : ''}</h2><span class="muted">${list.length} results</span></div>
   <div style="margin-bottom:10px">${[['', 'All'], ['comic', 'Comics'], ['novel', 'Web novels']].map(([v, t]) => `<a class="chip ${f.type === v ? 'active' : ''}" href="${q({ type: v })}">${t}</a>`).join('')}<span class="muted"> | </span>${[['trending', '🔥 Trending'], ['new', '🆕 Newest'], ['top', '⭐ Top rated']].map(([v, t]) => `<a class="chip ${f.sort === v ? 'active' : ''}" href="${q({ sort: v })}">${t}</a>`).join('')}</div>
-  <div style="margin-bottom:20px">${S.cfg.genres.map(g => `<a class="chip ${f.genre === g ? 'active' : ''}" href="${q({ genre: f.genre === g ? '' : g })}">${g}</a>`).join('')}</div>
+  <div style="margin-bottom:10px">${[['', 'Any status'], ['ongoing', 'Ongoing'], ['completed', 'Completed'], ['hiatus', 'Hiatus']].map(([v, t]) => `<a class="chip ${f.status === v ? 'active' : ''}" href="${q({ status: v })}">${t}</a>`).join('')}<span class="muted"> | </span>${[['', 'Any price'], ['free', '🆓 Free'], ['hybrid', '🎁 Free + early access'], ['paid', '💎 Paid']].map(([v, t]) => `<a class="chip ${f.monetization === v ? 'active' : ''}" href="${q({ monetization: v })}">${t}</a>`).join('')}<span class="muted"> | </span><select class="chip" id="lang" aria-label="Language"><option value="">🌐 Any language</option>${Object.entries(S.cfg.languages).map(([k, v]) => `<option value="${k}" ${f.language === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+  <div style="margin-bottom:10px">${S.cfg.genres.map(g => `<a class="chip ${f.genre === g ? 'active' : ''}" href="${q({ genre: f.genre === g ? '' : g })}">${g}</a>`).join('')}</div>
+  <div style="margin-bottom:20px">${S.cfg.tags.map(t => `<a class="chip ${f.tag === t ? 'active' : ''}" href="${q({ tag: f.tag === t ? '' : t })}">#${t}</a>`).join('')}</div>
   ${list.length ? `<div class="grid">${list.map(card).join('')}</div>` : '<div class="card"><h3>Nothing found 🕵️</h3><p class="muted">Try another search or genre.</p></div>'}</div>`;
 });
 
 // ---------------- SERIES ----------------
 on(/^\/series\/(\d+)$/, async m => {
-  const [s, sup] = await Promise.all([api('/series/' + m[1]), api(`/series/${m[1]}/supporters`).catch(() => [])]); const me = s.me;
+  const [s, sup, rel] = await Promise.all([api('/series/' + m[1]), api(`/series/${m[1]}/supporters`).catch(() => []), api(`/series/${m[1]}/related`).catch(() => [])]); const me = s.me;
   const canRead = s.chapters.find(c => !c.scheduled);
   const cont = me?.progress ? s.chapters.find(c => c.id === me.progress) : null;
   const html = `<div class="wrap"><div class="s-head"><img class="cover" src="${esc(s.cover)}" alt="${esc(s.title)}">
-  <div><div class="row"><span class="chip active">${s.type === 'novel' ? '📖 Web novel' : '🎨 Comic'}</span>${s.mature ? '<span class="chip" style="background:#e5484d;color:#fff">18+</span>' : ''}<span class="chip">${esc(s.status)}</span><span class="chip">${s.schedule === 'weekly' ? '🗓 Weekly' : '📦 Batch release'}</span>${s.status === 'removed' ? '<span class="chip" style="background:#e5484d;color:#fff">REMOVED</span>' : ''}</div>
+  <div><div class="row"><span class="chip active">${s.type === 'novel' ? '📖 Web novel' : '🎨 Comic'}</span>${s.mature ? '<span class="chip" style="background:#e5484d;color:#fff">18+</span>' : ''}<span class="chip">${esc(s.status)}</span><span class="chip">${s.schedule === 'weekly' ? '🗓 Weekly' : '📦 Batch release'}</span><span class="chip">${{ free: '🆓 Free', paid: '💎 Paid', hybrid: s.free_chapters ? `🎁 First ${s.free_chapters} chapters free` : '🎁 Free + early access' }[s.monetization]}</span>${s.reading_dir === 'rtl' ? '<span class="chip">📖 Manga (right-to-left)</span>' : ''}<span class="chip">🌐 ${esc(S.cfg.languages[s.language] || s.language)}</span>${s.status === 'removed' ? '<span class="chip" style="background:#e5484d;color:#fff">REMOVED</span>' : ''}</div>
   <h1 style="margin:10px 0 6px">${esc(s.title)}</h1><p class="muted">by <b>${esc(s.creator)}</b> · ${s.genres.map(esc).join(' · ') || '—'}</p>
+  ${s.tags.length ? `<div style="margin-top:8px">${s.tags.map(t => `<a class="chip" href="#/browse?tag=${encodeURIComponent(t)}">#${esc(t)}</a>`).join('')}</div>` : ''}
+  ${s.warnings.length ? `<p style="margin-top:8px;font-size:13px">⚠️ <b>Content warnings:</b> ${s.warnings.map(esc).join(', ')}</p>` : ''}
   <div class="row" style="margin:14px 0"><span>★ <b>${s.rating || '—'}</b></span><span>❤️ <b id="lk">${s.likes}</b></span><span>👥 <b id="fl">${s.followers}</b></span><span>👁 <b>${s.views}</b></span><span>📚 <b>${s.chapter_count}</b> chapters</span></div>
   <p style="max-width:680px;margin-bottom:18px;white-space:pre-line">${esc(s.synopsis)}</p>
   <div class="row">${canRead ? `<a class="btn" href="#/read/${(cont || canRead).id}">${cont ? 'Continue ch. ' + cont.number : 'Start reading'} →</a>` : ''}
   <button class="btn ghost ${me?.following ? 'on' : ''}" id="fo">${me?.following ? '✓ Following' : '＋ Follow'}</button><button class="btn ghost ${me?.liked ? 'on' : ''}" id="li">${me?.liked ? '❤️ Liked' : '🤍 Like'}</button>
   <button class="btn pink" id="tip">🪙 Tip creator</button><button class="btn ghost small" id="rep">🚩 Report</button>${s.own ? `<a class="btn ghost" href="#/studio/series/${s.id}">Manage</a>` : ''}</div>
   <div style="margin-top:18px"><span class="muted" style="font-size:13px">Your rating</span><div class="stars" id="stars">${[1, 2, 3, 4, 5].map(i => `<button class="${i <= (me?.rating || 0) ? 'on' : ''}" data-s="${i}" aria-label="${i} stars">★</button>`).join('')}</div></div></div></div>
-  <div class="section-head"><h2>Chapters</h2></div><div id="chs">${s.chapters.length ? [...s.chapters].reverse().map(c => `<a class="chapter" href="#/read/${c.id}"><span class="num">${c.number}</span><span class="t">${esc(c.title)}<br><small class="muted">${c.scheduled ? 'Goes live ' + dt(c.publish_at) : new Date(c.publish_at).toLocaleDateString()}</small></span>
+  <div class="section-head"><h2>Chapters</h2></div><div id="chs">${s.chapters.length ? [...s.chapters].reverse().map(c => `<a class="chapter" href="#/read/${c.id}"><span class="num">${c.number}</span><span class="t">${esc(c.title)}<br><small class="muted">${c.draft ? 'Draft — only you can see this' : c.held ? 'Held for copyright review' : c.scheduled ? 'Goes live ' + dt(c.publish_at) : new Date(c.publish_at).toLocaleDateString()}${c.words ? ' · ' + c.words.toLocaleString() + ' words · ~' + Math.max(1, Math.round(c.words / 230)) + ' min' : ''}</small></span>
     ${c.scheduled ? '<span class="lock sched">⏰ Scheduled</span>' : c.locked ? `<span class="lock">🪙 ${c.price_coins}${c.free_at ? ' · free ' + new Date(c.free_at).toLocaleDateString() : ''}</span>` : c.price_coins ? '<span class="lock read">Unlocked</span>' : ''}</a>`).join('') : '<p class="muted">No chapters yet.</p>'}</div>
+  ${rel.length ? `<div class="section-head"><h2>👀 You might also like</h2><span class="muted">${esc(rel[0].reason)}</span></div><div class="hscroll">${rel.map(card).join('')}</div>` : ''}
   ${sup.length ? `<div class="section-head"><h2>🏆 Top supporters</h2></div><div class="row">${sup.map((x, i) => `<div class="card row" style="padding:12px 18px;gap:10px">${['🥇', '🥈', '🥉', '🎖️', '🎖️'][i]} ${avatar(x.username)}<div><b>${esc(x.username)}</b><br><small class="muted">🪙 ${x.coins} supported</small></div></div>`).join('')}</div>` : ''}
   <div class="section-head"><h2>💬 Discussion channels</h2><button class="btn small" id="newch">＋ Host a channel</button></div>
   <div id="chl">${s.channels.length ? s.channels.map(c => `<a class="chapter in" href="#/channel/${c.id}"><span class="ch-tag ${c.tag}">${c.tag === 'spoilers' ? '⚠ spoilers' : c.tag}</span><span class="t">${esc(c.name)}<br><small class="muted">${esc(c.description)}</small></span><span class="live">Join</span></a>`).join('') : '<p class="muted">No channels yet — start the first one!</p>'}</div></div>`;
@@ -239,55 +252,8 @@ function channelModal(seriesId) {
     $('#cf', m).onsubmit = guard(async e => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); const r = await api('/channels', { method: 'POST', body: { ...f, series_id: seriesId } }); close(); location.hash = '#/channel/' + r.id; }); });
 }
 
-// ---------------- READER ----------------
-on(/^\/read\/(\d+)$/, async m => {
-  const c = await api('/chapters/' + m[1]);
-  const nav = `<div class="reader-bar" id="rbar"><a class="btn ghost small" href="#/series/${c.series_id}">← ${esc(c.series_title)}</a><b class="t">Ch. ${c.number}: ${esc(c.title)}</b><span style="margin-left:auto" class="row">
-    ${c.type === 'novel' ? '<button class="btn ghost small" id="fm">A−</button><button class="btn ghost small" id="fp">A+</button><button class="btn ghost small" id="sp">☕ Sepia</button><button class="btn ghost small" id="as" title="Auto-scroll (S)">⏬ Auto-scroll</button>' : '<button class="btn ghost small" id="pm" title="Toggle paged mode (P)">📄 Paged mode</button>'}
-    ${c.prev ? `<a class="btn ghost small" href="#/read/${c.prev}">‹ Prev</a>` : ''}${c.next ? `<a class="btn small" href="#/read/${c.next}">Next ›</a>` : ''}</span></div>`;
-  if (c.locked) {
-    const html = `${nav}<div class="paywall card"><div class="big">🔒</div><h2 class="display" style="font-size:34px">Early-access chapter</h2><p class="muted" style="margin:10px 0 18px">Unlock for <b>🪙 ${c.price_coins}</b> to read now${c.free_at ? `, or wait — it becomes free on <b>${new Date(c.free_at).toLocaleDateString()}</b>` : ''}. ${S.cfg.creatorShareUnlockPct}% supports the creator directly.</p>
-    <button class="btn" id="unlock">Unlock for 🪙 ${c.price_coins}</button> <a class="btn ghost" href="#/wallet">Get coins</a></div>`;
-    return { html, mount(v) { $('#unlock', v).onclick = guard(async e => { if (!needLogin()) return; const { clientX: x, clientY: y } = e; const r = await api(`/chapters/${c.id}/unlock`, { method: 'POST' }); S.user.coins = r.coins ?? S.user.coins; coinBurst(x, y); toast('Unlocked! Enjoy ✨', 'ok'); setTimeout(route, 500); }); } };
-  }
-  const comments = await api(`/chapters/${c.id}/comments`);
-  const body = c.type === 'novel' ? `<article class="novel-body">${(c.content || '').split(/\n{2,}/).map(p => `<p>${esc(p).replace(/\n/g, '<br>')}</p>`).join('')}</article>`
-    : `<div class="comic" id="comic">${c.pages.map((p, i) => `<img loading="lazy" src="${esc(p)}" alt="Page ${i + 1}">`).join('')}</div><div class="row" id="pager" style="justify-content:center;margin:12px" hidden><button class="btn ghost small" id="pp">‹ Page</button><b id="pn"></b><button class="btn ghost small" id="pnx">Page ›</button></div>`;
-  const note = c.author_note ? `<div class="card" style="max-width:760px;margin:24px auto 0;border-left:5px solid var(--green)"><b>✍️ Note from ${esc(c.creator)}</b><p style="margin-top:6px;white-space:pre-line">${esc(c.author_note)}</p></div>` : '';
-  const reacts = `<div class="row" id="reacts" style="justify-content:center;margin:24px 0 0">${S.cfg.reactions.map(e => `<button class="chip ${c.mine?.includes(e) ? 'active' : ''}" data-e="${e}" style="font-size:18px">${e} <span>${c.reactions?.[e] || 0}</span></button>`).join('')}</div>`;
-  const end = `${note}${reacts}<div class="wrap" style="max-width:760px"><div class="row" style="justify-content:center;margin:20px 0 30px">${c.prev ? `<a class="btn ghost" href="#/read/${c.prev}">‹ Previous</a>` : ''}${c.next ? `<a class="btn" href="#/read/${c.next}">Next chapter ›</a>` : `<a class="btn" href="#/series/${c.series_id}">Back to series</a>`}</div>
-  <div class="section-head" style="margin-top:0"><h2>💬 Comments</h2><span class="muted">Moderated · tag spoilers with ||text||</span></div>
-  <form class="form" id="cmf" style="margin-bottom:10px"><textarea name="b" maxlength="2000" placeholder="${S.user ? 'Share your thoughts…' : 'Log in to comment'}" style="min-height:70px"></textarea><div><button class="btn small">Post comment</button></div></form>
-  <div id="cml">${comments.map(commentHtml).join('') || '<p class="muted">Be the first to comment.</p>'}</div></div>`;
-  return { html: nav + body + end, mount(v) {
-    let fs = +(localStorage.getItem('iv_fs') || 18); const setFs = () => document.documentElement.style.setProperty('--fs', fs + 'px'); setFs();
-    $('#fp', v)?.addEventListener('click', () => { fs = Math.min(28, fs + 2); localStorage.setItem('iv_fs', fs); setFs(); }); $('#fm', v)?.addEventListener('click', () => { fs = Math.max(13, fs - 2); localStorage.setItem('iv_fs', fs); setFs(); });
-    $('#sp', v)?.addEventListener('click', () => document.body.classList.toggle('sepia'));
-    // novel auto-scroll (adjustable with +/-), stops when the reader leaves the page
-    let autoT = null, speed = 1; const stopAuto = () => { clearInterval(autoT); autoT = null; const b = $('#as'); if (b) b.textContent = '⏬ Auto-scroll'; };
-    $('#as', v)?.addEventListener('click', () => { if (autoT) return stopAuto(); $('#as').textContent = '⏸ Stop'; autoT = setInterval(() => { if (!$('#as')) return stopAuto(); scrollBy(0, speed); }, 16); });
-    // comic paged mode: one page at a time, arrow keys / swipe
-    const imgs = $$('.comic img', v); let pi = 0, paged = false;
-    const showPage = n => { pi = Math.max(0, Math.min(imgs.length - 1, n)); imgs.forEach((im, k) => { im.style.display = k === pi ? 'block' : 'none'; if (k === pi) im.classList.add('in'); }); $('#pn').textContent = `${pi + 1} / ${imgs.length}`; scrollTo({ top: 0 }); };
-    const togglePaged = () => { if (!imgs.length) return; paged = !paged; $('#pager').hidden = !paged; $('#pm').textContent = paged ? '📜 Scroll mode' : '📄 Paged mode'; if (paged) showPage(0); else imgs.forEach(im => { im.style.display = ''; im.classList.add('in'); }); };
-    $('#pm', v)?.addEventListener('click', togglePaged); $('#pp', v)?.addEventListener('click', () => showPage(pi - 1)); $('#pnx', v)?.addEventListener('click', () => showPage(pi + 1));
-    let tx0 = 0; $('#comic', v)?.addEventListener('touchstart', e => tx0 = e.touches[0].clientX, { passive: true }); $('#comic', v)?.addEventListener('touchend', e => { if (paged) { const dx = e.changedTouches[0].clientX - tx0; if (Math.abs(dx) > 50) showPage(pi + (dx < 0 ? 1 : -1)); } });
-    document.onkeydown = e => { if (!$('#rbar') || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
-      if (e.key === 'ArrowRight') { if (paged && pi < imgs.length - 1) showPage(pi + 1); else if (c.next) location.hash = '#/read/' + c.next; }
-      else if (e.key === 'ArrowLeft') { if (paged && pi > 0) showPage(pi - 1); else if (c.prev) location.hash = '#/read/' + c.prev; }
-      else if (e.key.toLowerCase() === 'p') togglePaged(); else if (e.key.toLowerCase() === 's') $('#as')?.click();
-      else if (e.key === '+' ) speed = Math.min(6, speed + 1); else if (e.key === '-') speed = Math.max(1, speed - 1); };
-    $('#reacts', v).addEventListener('click', guard(async e => { const b = e.target.closest('[data-e]'); if (!b || !needLogin()) return; const r = await api(`/chapters/${c.id}/react`, { method: 'POST', body: { emoji: b.dataset.e } }); const n = $('span', b); n.textContent = +n.textContent + (r.on ? 1 : -1); b.classList.toggle('active', r.on); }));
-    $$('.comic img', v).forEach(img => { img.addEventListener('load', () => img.classList.add('in')); });
-    let last = scrollY; const bar = $('#rbar'); const onScroll = () => { const h = document.documentElement; $('#progress').style.width = (scrollY / (h.scrollHeight - innerHeight) * 100) + '%'; bar?.classList.toggle('hide', scrollY > last && scrollY > 200); last = scrollY; };
-    window.onscroll = () => { if ($('#rbar')) onScroll(); else { $('#progress').style.width = '0'; window.onscroll = null; } };
-    $('#cmf', v).onsubmit = guard(async e => { e.preventDefault(); if (!needLogin()) return; const ta = e.target.b; const r = await api(`/chapters/${c.id}/comments`, { method: 'POST', body: { body: ta.value } }); ta.value = ''; $('#cml').insertAdjacentHTML('afterbegin', commentHtml(r)); bindSpoilers($('#cml')); });
-    $('#cml', v).addEventListener('click', e => { const b = e.target.closest('[data-rep]'); if (b && needLogin()) reportModal('comment', +b.dataset.rep); });
-    bindSpoilers(v);
-  } };
-});
+// ---------------- READER lives in reader.js ----------------
 const inline = t => esc(t).replace(/\|\|(.+?)\|\|/g, '<span class="spoiler" title="Spoiler — click to reveal">$1</span>');
-const commentHtml = c => `<div class="comment">${avatar(c.username)}<div style="flex:1"><b>${esc(c.username)}</b>${c.role !== 'reader' ? `<span class="role ${c.role}">${c.role}</span>` : ''} <small class="muted">${ago(c.created_at)}</small><div>${inline(c.body)}</div><button data-rep="${c.id}" class="muted" style="background:none;border:0;cursor:pointer;font-size:12px">🚩 report</button></div></div>`;
 function bindSpoilers(root) { $$('.spoiler,.spoil-msg', root).forEach(el => el.onclick = () => el.classList.toggle('shown')); }
 
 // ---------------- CHANNELS ----------------
@@ -328,20 +294,13 @@ on(/^\/channel\/(\d+)$/, async m => {
   } };
 });
 
-// ---------------- LIBRARY ----------------
-on(/^\/library$/, async () => {
-  if (!S.user) throw Object.assign(new Error('Log in to see your library'), { status: 401 });
-  const l = await api('/library');
-  return `<div class="wrap"><div class="section-head" style="margin-top:0"><h2>Continue reading</h2></div>${l.continue.length ? `<div class="grid">${l.continue.map(s => `<div>${card(s)}<a class="btn small" style="margin-top:8px" href="#/read/${s.progress.chapter_id}">Resume ch. ${s.progress.number}</a></div>`).join('')}</div>` : '<p class="muted">Start reading and your progress shows up here.</p>'}
-  <div class="section-head"><h2>Following</h2></div>${l.following.length ? `<div class="grid">${l.following.map(card).join('')}</div>` : '<p class="muted">Follow series to get new-chapter notifications.</p>'}</div>`;
-});
-
 // ---------------- WALLET ----------------
 on(/^\/wallet$/, async (m, p) => {
   if (!S.user) throw Object.assign(new Error('Log in to open your wallet'), { status: 401 });
   const w = await api('/wallet');
   const html = `<div class="wrap"><div class="section-head" style="margin-top:0"><h2>Wallet</h2></div><div class="stats"><div class="stat"><span class="muted">Your coins</span><b>🪙 ${w.coins}</b></div><div class="stat"><span class="muted">Check-in streak</span><b>🔥 ${S.user.streak}</b><button class="btn small" id="ck" style="margin-top:8px" ${S.user.can_checkin ? '' : 'disabled'}>${S.user.can_checkin ? 'Claim today\'s coins' : 'Claimed ✓'}</button></div></div>
   <p class="muted" style="margin-bottom:16px">Coins unlock early-access chapters and tip creators. <b>${S.cfg.creatorShareUnlockPct}%</b> of what you spend on unlocks goes to the creator. ${S.cfg.payments === 'demo' ? '<i>Demo checkout — no real money is charged.</i>' : S.cfg.payments === 'stripe' ? 'Secure card checkout by Stripe.' : '<b>Coin purchases are not enabled yet.</b>'}</p>
+  <p style="margin-bottom:16px"><a class="chip active" href="#/premium">⭐ Premium: ad-free reading, unlimited highlights and ${S.cfg.premium.monthlyUnlocks} early-access unlocks a month — ${money(S.cfg.premium.cents)}/mo</a></p>
   <div class="packs">${w.packs.map(p => `<div class="pack" data-p="${p.id}"><div class="c">🪙 ${p.coins}</div><div style="font-weight:700;font-size:20px">${money(p.cents)}</div><small class="muted">${(p.cents / p.coins).toFixed(2)}¢ / coin</small><br><button class="btn small" style="margin-top:12px">Buy</button></div>`).join('')}</div>
   <div class="section-head"><h2>History</h2></div><div class="card" style="padding:6px 14px"><table><thead><tr><th>When</th><th>Type</th><th>Coins</th><th>Note</th></tr></thead><tbody>${w.history.map(h => `<tr><td>${dt(h.created_at)}</td><td>${h.type.replace('_', ' ')}</td><td>${h.coins > 0 ? '+' : ''}${h.coins || ''}${h.cents && h.type === 'purchase' ? ` (${money(h.cents)})` : ''}</td><td>${esc(h.note)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No activity yet.</td></tr>'}</tbody></table></div></div>`;
   return { html, mount(v) { $('#ck', v)?.addEventListener('click', async e => { await checkin(e); setTimeout(route, 900); }); if (p.get('paid')) { toast('Payment received — your coins will appear in a moment 🪙', 'ok'); setTimeout(async () => { await refreshMe(); renderNav(); }, 2500); }
@@ -388,56 +347,12 @@ on(/^\/studio$/, async (m, p) => {
   } };
 });
 
-on(/^\/studio\/new$/, async () => {
-  if (!S.user || S.user.role === 'reader') throw new Error('Creators only.');
-  const html = `<div class="wrap" style="max-width:720px"><div class="section-head" style="margin-top:0"><h2>New series</h2></div><form class="form card" id="nf">
-  <label>Title<input name="title" required maxlength="80"></label><label>Format<select name="type"><option value="comic">Comic (image pages)</option><option value="novel">Web novel (text)</option></select></label>
-  <label>Synopsis<textarea name="synopsis" maxlength="1500" required></textarea></label>
-  <div><b style="font-size:13px">Genres (up to 4)</b><div style="margin-top:8px">${S.cfg.genres.map(g => `<label class="chip"><input type="checkbox" name="g" value="${g}" style="display:none">${g}</label>`).join('')}</div></div>
-  <label>Release plan<select name="schedule"><option value="weekly">Weekly schedule (new chapter every 7 days)</option><option value="bulk">Batch release (publish many at once)</option></select></label>
-  <label>Cover image (3:4, max 8MB — optional, a cover is generated otherwise)<input type="file" name="cover" accept="image/*"></label>
-  <label class="check"><input type="checkbox" name="mature"> Contains mature content (18+ readers only)</label>
-  <label class="check"><input type="checkbox" required> I own all rights to this work and agree to the Creator Terms.</label><button class="btn">Create series</button></form></div>`;
-  return { html, mount(v) {
-    $$('.chip input', v).forEach(i => i.onchange = () => { if ($$('.chip input:checked', v).length > 4) { i.checked = false; return toast('Max 4 genres', 'err'); } i.parentElement.classList.toggle('active', i.checked); });
-    $('#nf', v).onsubmit = guard(async e => { e.preventDefault(); const f = new FormData(e.target); f.set('genres', f.getAll('g').join(',')); f.set('mature', f.get('mature') === 'on'); if (!f.get('cover')?.size) f.delete('cover'); const r = await api('/series', { method: 'POST', form: f }); toast('Series created! Add your first chapter.', 'ok'); location.hash = '#/studio/series/' + r.id; });
-  } };
-});
-
-on(/^\/studio\/series\/(\d+)$/, async m => {
-  if (!S.user) throw Object.assign(new Error('Log in first'), { status: 401 });
-  const s = await api('/series/' + m[1]); if (!s.own) throw new Error('This is not your series.');
-  const novel = s.type === 'novel';
-  const pubFields = `<fieldset class="form" style="border:1px solid var(--line);border-radius:12px;padding:14px"><legend style="font-weight:700;font-size:13px">Release</legend>
-    <label class="check"><input type="radio" name="publish_mode" value="now" ${s.schedule === 'bulk' ? 'checked' : ''}> Publish immediately</label>
-    <label class="check"><input type="radio" name="publish_mode" value="weekly" ${s.schedule === 'weekly' ? 'checked' : ''}> Weekly — auto-schedule into the next free 7-day slot</label>
-    <label class="check"><input type="radio" name="publish_mode" value="date"> Pick a date <input type="datetime-local" name="publish_at" style="width:auto"></label>
-    <label>Early-access price (coins, ${S.cfg.minCoinsPerChapter}–${S.cfg.maxCoinsPerChapter}; 0 = free)<input type="number" name="price_coins" min="0" max="${S.cfg.maxCoinsPerChapter}" value="0"></label>
-    <label>Becomes free after (days, 0 = stays premium; max ${S.cfg.maxFreeAfterDays})<input type="number" name="free_after_days" min="0" max="${S.cfg.maxFreeAfterDays}" value="7"></label></fieldset>`;
-  const html = `<div class="wrap" style="max-width:860px"><a class="btn ghost small" href="#/series/${s.id}">← View public page</a><div class="section-head"><h2>${esc(s.title)}</h2><span class="chip">${s.status}</span></div>
-  <div class="row" style="margin-bottom:16px"><select id="st" class="chip">${['ongoing', 'hiatus', 'completed'].map(x => `<option ${s.status === x ? 'selected' : ''}>${x}</option>`).join('')}</select><span class="muted">${s.chapters.length} chapters (${s.chapters.filter(c => c.scheduled).length} scheduled)</span></div>
-  ${tabsHtml([['one', novel ? 'Add chapter' : 'Upload chapter'], ...(novel ? [['bulk', 'Bulk import']] : []), ['list', 'Chapters']], 'one')}
-  <section data-p="one"><form class="form card" id="cf"><label>Chapter title<input name="title" required maxlength="100"></label>
-  ${novel ? '<label>Text<textarea name="content" style="min-height:260px" required minlength="50"></textarea></label>' : '<div class="drop" id="drop"><label>Page images in reading order (PNG/JPG/WebP, vertical strips welcome)<input type="file" name="pages" accept="image/*" multiple required></label><small class="muted" id="fc"></small></div>'}
-  <label>Author's note to readers (optional)<textarea name="author_note" maxlength="500" style="min-height:70px"></textarea></label>
-  ${pubFields}<button class="btn">Publish / schedule chapter</button></form></section>
-  ${novel ? `<section data-p="bulk" hidden><form class="form card" id="bf"><p class="muted">Paste many chapters at once. Start each with a line like <code># Chapter title</code>. With "Weekly" they're scheduled one per week.</p><textarea name="text" style="min-height:260px" placeholder="# The Beginning&#10;Once upon a time…&#10;&#10;# Chapter two&#10;…"></textarea>${pubFields.replace(/name="publish_at"/, 'name="publish_at_unused"')}<button class="btn">Import chapters</button></form></section>` : ''}
-  <section data-p="list" hidden><div class="card" style="padding:6px 14px"><table><tbody>${s.chapters.map(c => `<tr><td>#${c.number}</td><td>${esc(c.title)}</td><td>${c.scheduled ? '⏰ ' + dt(c.publish_at) : '✅ live'}</td><td>${c.price_coins ? '🪙' + c.price_coins : 'free'}</td><td>👁 ${c.views}</td></tr>`).join('')}</tbody></table></div></section></div>`;
-  return { html, mount(v) {
-    $$('.tabs button', v).forEach(b => b.onclick = () => { $$('.tabs button', v).forEach(x => x.classList.toggle('active', x === b)); $$('section[data-p]', v).forEach(x => x.hidden = x.dataset.p !== b.dataset.t); });
-    $('#st', v).onchange = guard(async e => { await api('/series/' + s.id, { method: 'PATCH', body: { status: e.target.value } }); toast('Status updated', 'ok'); });
-    $('input[type=file][name=pages]', v)?.addEventListener('change', e => $('#fc').textContent = e.target.files.length + ' page(s) selected');
-    $('#cf', v).onsubmit = guard(async e => { e.preventDefault(); const f = new FormData(e.target); if (f.get('publish_at')) f.set('publish_at', new Date(f.get('publish_at')).toISOString()); const r = await api(`/series/${s.id}/chapters`, { method: 'POST', form: f }); toast(r.publish_at > Date.now() ? 'Scheduled for ' + dt(r.publish_at) : 'Published!', 'ok'); route(); });
-    $('#bf', v)?.addEventListener('submit', guard(async e => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); const r = await api(`/series/${s.id}/chapters/bulk`, { method: 'POST', body: f }); toast(r.created + ' chapters imported', 'ok'); route(); }));
-  } };
-});
-
 // ---------------- ADMIN ----------------
 on(/^\/admin$/, async (m, p) => {
   if (S.user?.role !== 'admin') throw new Error('Moderators only.');
   const tab = p.get('t') || 'reports';
   const [ov, reports, payouts, dmca, appeals, audit, words] = await Promise.all([api('/admin/overview'), api('/admin/reports'), api('/admin/payouts'), api('/admin/dmca'), api('/admin/appeals'), api('/admin/audit'), api('/admin/words')]);
-  const html = `<div class="wrap"><div class="section-head" style="margin-top:0"><h2>Moderation & Operations</h2></div>
+  const html = `<div class="wrap"><div class="section-head" style="margin-top:0"><h2>Moderation & Operations</h2><a class="btn" href="#/admin/copyright">© Copyright review${ov.openCopyright ? ` (${ov.openCopyright})` : ''}</a></div>
   <div class="stats"><div class="stat"><span class="muted">Users</span><b>${ov.users}</b></div><div class="stat"><span class="muted">Series</span><b>${ov.series}</b></div><div class="stat"><span class="muted">Open reports</span><b>${ov.openReports}</b></div><div class="stat"><span class="muted">Pending payouts</span><b>${ov.pendingPayouts}</b></div><div class="stat"><span class="muted">Coin sales</span><b>${money(ov.grossCents)}</b></div><div class="stat"><span class="muted">Creator earnings accrued</span><b>${money(ov.creatorEarnedCents)}</b></div></div>
   ${tabsHtml([['reports', `Reports (${reports.length})`], ['payouts', 'Payouts'], ['dmca', `Copyright (${dmca.filter(d => d.status === 'open').length})`], ['appeals', `Appeals (${appeals.filter(a => a.status === 'open').length})`], ['words', 'Word filter'], ['audit', 'Audit log'], ['users', 'Users']], tab)}
   <section data-p="appeals" ${tab === 'appeals' ? '' : 'hidden'}><div class="card" style="padding:6px 14px"><table><thead><tr><th>User</th><th>Appeal</th><th>Status</th><th></th></tr></thead><tbody>${appeals.map(a => `<tr><td>${esc(a.username)}<br><small class="muted">${a.strikes} strike(s)</small></td><td>${esc(a.text)}<br><small class="muted">${dt(a.created_at)}</small></td><td>${a.status}</td><td>${a.status === 'open' ? `<button class="btn small" data-apid="${a.id}" data-a="accept">Accept</button> <button class="btn small ghost" data-apid="${a.id}" data-a="reject">Reject</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No appeals.</td></tr>'}</tbody></table></div></section>
@@ -481,11 +396,16 @@ on(/^\/privacy$/, async () => doc('Privacy Policy', `<p class="muted">Template f
   <h3>Sharing</h3><p>We do not sell personal data. We share it only with service providers needed to operate InkVerse (hosting, payments, email) and when the law requires it. Usernames, comments and chat messages are visible to other users.</p>
   <h3>Your choices</h3><p>You can edit your profile, and request export or deletion of your account by contacting support. Some records (payments, moderation logs) may be retained as required by law.</p><h3>Security & cookies</h3><p>Passwords are hashed; connections use HTTPS. We store a login token and your theme/reader preferences in your browser's local storage; we do not use advertising cookies.</p>`));
 
+// ---------------- shared toolkit for reader.js / studio.js / pages.js ----------------
+window.IV = { S, $, $$, esc, money, ago, dt, avatar, api, toast, guard, modal, card, coinBurst, needLogin, authModal, route, renderNav, refreshMe, on, leave: f => leave.push(f), tabsHtml, inline, bindSpoilers, reportModal, skeleton };
+
 // ---------------- boot ----------------
 window.addEventListener('hashchange', route);
 (async function boot() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
-  S.cfg = await fetch('/api/config').then(r => r.json()); await refreshMe(); renderFooter(); route();
+  try { S.cfg = await fetch('/api/config').then(r => r.json()); localStorage.setItem('iv_cfg', JSON.stringify(S.cfg)); }
+  catch { S.cfg = JSON.parse(localStorage.getItem('iv_cfg') || 'null'); if (!S.cfg) { document.body.innerHTML = '<p style="padding:40px">You appear to be offline. Reconnect to load InkVerse.</p>'; return; } }
+  await refreshMe(); renderFooter(); route();
   setInterval(async () => { if (S.token && !document.hidden) { try { S.notifs = await api('/notifications'); renderNav(); } catch {} } }, 60000);
 })();
 })();

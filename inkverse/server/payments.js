@@ -26,8 +26,26 @@ function mountWebhook(app) {
     if (!secret) return res.status(503).json({ error: 'Webhook secret not configured.' });
     if (!verifySignature(req.body, req.headers['stripe-signature'], secret)) return res.status(400).json({ error: 'Bad signature.' });
     let event; try { event = JSON.parse(req.body.toString('utf8')); } catch { return res.status(400).json({ error: 'Bad payload.' }); }
+    const obj = event.data.object;
+    if (event.type === 'checkout.session.completed' && obj.mode === 'subscription') {           // Premium started
+      const uid = Number(obj.client_reference_id);
+      if (obj.payment_status === 'paid' && db.prepare('SELECT 1 FROM users WHERE id=?').get(uid) && obj.amount_total === RULES.premium.cents) db.transaction(() => {
+        if (db.prepare('INSERT OR IGNORE INTO stripe_events(id,created_at) VALUES(?,?)').run(obj.id, now()).changes === 0) return;
+        db.prepare('UPDATE users SET stripe_customer=?, stripe_sub=?, sub_cancel=0, plan_until=MAX(plan_until,?) WHERE id=?').run(obj.customer, obj.subscription, now() + RULES.premium.days * 86400000, uid);
+        db.prepare('INSERT INTO transactions(user_id,type,cents,note,created_at) VALUES(?,?,?,?,?)').run(uid, 'subscription', RULES.premium.cents, 'Premium ' + obj.id, now());
+        db.prepare('INSERT INTO notifications(user_id,text,link,created_at) VALUES(?,?,?,?)').run(uid, 'Welcome to InkVerse Premium! Ads are off and your perks are active.', '#/premium', now());
+      })();
+      return res.json({ received: true });
+    }
+    if (event.type === 'invoice.paid' || event.type === 'invoice.payment_succeeded') {          // renewal: extend to the paid period end
+      const end = obj.lines?.data?.[0]?.period?.end;
+      if (obj.customer && end && obj.amount_paid > 0) db.prepare('UPDATE users SET plan_until=MAX(plan_until,?), sub_cancel=0 WHERE stripe_customer=?').run(end * 1000 + 86400000, obj.customer);
+      return res.json({ received: true });
+    }
+    if (event.type === 'customer.subscription.deleted') { db.prepare('UPDATE users SET plan_until=?, sub_cancel=0, stripe_sub=NULL WHERE stripe_customer=?').run(now(), obj.customer); return res.json({ received: true }); }
     if (event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') {
-      const s = event.data.object;
+      const s = obj;
+      if (s.mode === 'subscription') return res.json({ received: true });
       if (s.payment_status !== 'paid') return res.json({ received: true });
       const pack = RULES.coinPacks.find(p => p.id === s.metadata?.pack), uid = Number(s.client_reference_id);
       const user = db.prepare('SELECT id FROM users WHERE id=?').get(uid);
@@ -46,8 +64,14 @@ function mountWebhook(app) {
   });
 }
 
-function mountRoutes(app, { needAuth, fail }) {
-  app.post('/api/wallet/checkout', needAuth, async (req, res) => {
+// Minimal Stripe REST helper (form-encoded POST), shared with the subscription routes.
+async function stripeCall(path, params) {
+  const r = await fetch('https://api.stripe.com/v1' + path, { method: 'POST', headers: { Authorization: 'Bearer ' + process.env.STRIPE_SECRET_KEY, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(params) });
+  const data = await r.json(); if (!r.ok) throw new Error(data.error?.message || 'Stripe error'); return data;
+}
+
+function mountRoutes(app, { needAuth, fail, needVerified = (q, r, n) => n() }) {
+  app.post('/api/wallet/checkout', needAuth, needVerified, async (req, res) => {
     if (paymentsMode() !== 'stripe') return fail(res, 400, 'Card payments are not enabled on this site.');
     const pack = RULES.coinPacks.find(p => p.id === req.body.pack); if (!pack) return fail(res, 400, 'Unknown pack.');
     const base = (process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
@@ -65,4 +89,4 @@ function mountRoutes(app, { needAuth, fail }) {
   });
 }
 
-module.exports = { mountWebhook, mountRoutes, paymentsMode, verifySignature };
+module.exports = { mountWebhook, mountRoutes, paymentsMode, verifySignature, stripeCall };

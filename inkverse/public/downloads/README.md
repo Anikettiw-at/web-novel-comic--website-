@@ -6,6 +6,15 @@ Full-stack: Node.js · Express · SQLite (better-sqlite3) · WebSocket (`ws`) ·
 
 > **Status:** fully working locally. Payments are a **demo checkout** (no real money moves). Follow "Going to production" before charging real users.
 
+## What's inside (v3)
+- **Free tier & Premium** — free is ad-supported with a highlight cap; Premium removes ads, lifts the cap and includes monthly early-access unlocks. Creators choose **Free / Paid / Hybrid** per series.
+- **Reading modes** — vertical scroll, paged, **manga (right-to-left, double-page)** and a novel **Book view**, all with an animated **page-turn**. Themes, fonts, text-to-speech, offline saving and synced progress.
+- **Highlights that persist** — select text in novels (4 colours + notes) or drag a box over a comic panel; stored on your account.
+- **Copyright check on new uploads** — image hashing + text fingerprinting against other creators and a protected-works registry; auto-block, admin review queue, signed ownership proof.
+- **Creator studio** — drafts, scheduling, bulk import, chapter manager, retention/conversion analytics, comment pin/delete, polls, tags & content warnings.
+- **Discovery & fairness** — charts (rising, paid, free, completed, spotlight), related series, filters, 30-day new-creator boost.
+- **Accounts** — signup/login, email verification, password reset/change, sign out everywhere, data export, account deletion.
+
 Docs: [`design.md`](design.md) (features, business rules, architecture) · [`tasks.md`](tasks.md) (what is done / next).
 
 ---
@@ -31,7 +40,7 @@ The first start creates `data/inkverse.db` and seeds demo content.
 > These demo credentials are public. **Never deploy with them** — see §3.
 
 ```bash
-npm test             # 48 end-to-end API checks on a throwaway database
+npm test             # 140+ end-to-end API checks on throwaway databases
 ```
 
 ---
@@ -59,6 +68,7 @@ All optional locally. Copy `.env.example` to `.env` and run `npm run start:env` 
 | `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS` `SMTP_SECURE` | – | **Yes** for password reset | Any SMTP provider (Brevo, Resend, Mailgun, SendGrid, Gmail app password) |
 | `MAIL_FROM` | `SMTP_USER` | recommended | e.g. `InkVerse <no-reply@yourdomain.com>` |
 | `BACKUP_KEEP` | `7` | no | Daily DB backups kept in `DATA_DIR/backups` |
+| `REQUIRE_VERIFIED` | `false` | recommended with SMTP | `true` = creators must confirm their email before publishing and anyone must before buying coins |
 
 Business rules (revenue split, payout minimum, coin packs, check-in rewards) live in `server/db.js → RULES` and are also shown in the UI automatically.
 
@@ -141,11 +151,12 @@ Back up `DATA_DIR` (database + secret) and `UPLOAD_DIR` nightly. For a consisten
 - [ ] Real payments connected (below) — the demo checkout is for development only
 - [ ] Terms, Privacy Policy and a registered DMCA agent reviewed by a lawyer
 - [ ] Replace the demo word filter list with a maintained, multilingual one
-- [ ] Add image moderation before opening uploads to the public
+- [ ] Add NSFW/CSAM image moderation before opening uploads to the public (the copyright check does not do this)
+- [ ] Install a real web-wide image search (e.g. TinEye/Copyleaks) if you need to catch copies of work InkVerse has never seen
 - [ ] Add transactional email (password reset, removal notices)
 
 ## 5. Going to production with real payments
-The demo endpoints are `POST /api/wallet/buy` (coin purchase) and the admin "Mark paid" payout button.
+The demo endpoints are `POST /api/wallet/buy` (coin purchase), the demo Premium grant in `POST /api/premium/subscribe`, and the admin "Mark paid" payout button. With `STRIPE_SECRET_KEY` set, coins **and Premium** use Stripe Checkout; add the webhook events `checkout.session.completed`, `invoice.paid` and `customer.subscription.deleted`.
 
 1. **Coin purchase:** create a Stripe Checkout Session per coin pack; on the `checkout.session.completed` **webhook** (verify the signature) run the same logic as `/api/wallet/buy` (credit coins + `transactions` row). Remove the demo endpoint.
 2. **Payouts:** use Stripe Connect or PayPal Payouts. In `POST /api/admin/payouts/:id` (approve) trigger the real transfer first, then mark paid.
@@ -164,17 +175,19 @@ server/
   index.js        Express app, REST API, WebSocket chat, scheduler
   advanced.js     recommendations, analytics, reactions, streaks, badges, appeals, audit, word filter
   moderation.js   text screening, strikes, reports
+  copyright.js    upload fingerprinting, protected registry, review queue, ownership proof
+  features.js     premium, highlights, prefs/history, charts, polls, creator tools
   db.js           schema + business RULES
   seed.js         demo / production seeding
   smoke-test.js   end-to-end tests (npm test)
-public/           SPA (index.html, css/styles.css, js/app.js), PWA manifest + service worker
+public/           SPA (index.html, css/styles.css, js/app.js + reader.js, studio.js, pages.js), PWA manifest + service worker
 uploads/          user uploads (git-ignored)
 data/             SQLite DB + secret (git-ignored)
 design.md  tasks.md  README.md  Dockerfile  .env.example
 ```
 
 ## 8. API overview
-Auth `POST /api/auth/register|login` · `GET/PATCH /api/me` · Catalogue `GET /api/series`, `/api/series/:id`, `/api/chapters/:id` · Creator `POST /api/series`, `/api/series/:id/chapters`, `/chapters/bulk`, `GET /api/creator/dashboard|analytics`, `POST /api/creator/payout` · Money `GET /api/wallet`, `POST /api/wallet/buy`, `/api/chapters/:id/unlock`, `/api/tip` · Community `GET/POST /api/channels`, WebSocket `/ws`, `POST /api/report`, `/api/appeals` · Admin `GET/POST /api/admin/*` · Engagement `POST /api/checkin`, `GET /api/recommendations`, `/api/me/badges`.
+Auth `POST /api/auth/register|login` · `GET/PATCH /api/me` · Catalogue `GET /api/series`, `/api/series/:id`, `/api/chapters/:id` · Creator `POST /api/series`, `/api/series/:id/chapters`, `/chapters/bulk`, `GET /api/creator/dashboard|analytics`, `POST /api/creator/payout` · Money `GET /api/wallet`, `POST /api/wallet/buy`, `/api/chapters/:id/unlock`, `/api/tip` · Community `GET/POST /api/channels`, WebSocket `/ws`, `POST /api/report`, `/api/appeals` · Admin `GET/POST /api/admin/*` · Engagement `POST /api/checkin`, `GET /api/recommendations`, `/api/me/badges` · **v3** Premium `GET /api/premium`, `POST /api/premium/subscribe|cancel`, `/api/chapters/:id/premium-unlock` · Highlights `GET/POST /api/chapters/:id/highlights`, `PATCH/DELETE /api/highlights/:id`, `GET /api/highlights` · Reader `GET/PUT /api/me/prefs`, `POST /api/chapters/:id/progress`, `GET /api/history` · Discovery `GET /api/charts`, `/api/series/:id/related` · Creator `PATCH/DELETE /api/chapters/:id`, `GET /api/creator/series/:id/retention`, `/api/creator/comments`, `POST /api/chapters/:id/poll`, `GET /api/chapters/:id/proof` · Copyright `POST /api/copyright/check-text`, admin `GET /api/admin/copyright`, `POST /api/admin/copyright/protect|:id` · Account `POST /api/auth/change-password|logout-all|verify-email`, `GET /api/me/export`, `DELETE /api/me` · Ops `GET /healthz`.
 
 ## 9. Troubleshooting
 | Problem | Fix |

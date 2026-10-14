@@ -168,6 +168,56 @@ addColumn('chapters', 'author_note', 'TEXT');
 addColumn('earnings', 'payer_id', 'INTEGER');
 addColumn('earnings', 'coins', 'INTEGER NOT NULL DEFAULT 0');
 
+// ---- v3: premium tier, highlights, manga mode, copyright check, creator tools ----
+db.exec(`
+CREATE TABLE IF NOT EXISTS highlights (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'text',            -- text (novel selection) | region (comic panel box)
+  para INTEGER, start INTEGER, end INTEGER, text TEXT,
+  page INTEGER, x REAL, y REAL, w REAL, h REAL,
+  color TEXT NOT NULL DEFAULT 'yellow', note TEXT DEFAULT '', created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hl_user_ch ON highlights(user_id, chapter_id);
+CREATE TABLE IF NOT EXISTS chapter_reads (user_id INTEGER, chapter_id INTEGER, series_id INTEGER, first_at INTEGER, PRIMARY KEY(user_id, chapter_id));
+CREATE TABLE IF NOT EXISTS fingerprints (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL,   -- image | text
+  sha TEXT, phash TEXT, shingles TEXT,                        -- exact hash, 64-bit perceptual hash (hex), JSON array of text shingle hashes
+  owner_id INTEGER, series_id INTEGER, chapter_id INTEGER, protected INTEGER NOT NULL DEFAULT 0, label TEXT, created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fp_sha ON fingerprints(sha);
+CREATE TABLE IF NOT EXISTS copyright_checks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, chapter_id INTEGER, series_id INTEGER, user_id INTEGER, score REAL NOT NULL,
+  verdict TEXT NOT NULL,                        -- pass | review | block
+  details TEXT, status TEXT NOT NULL DEFAULT 'open',   -- open | approved | rejected
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS polls (id INTEGER PRIMARY KEY AUTOINCREMENT, chapter_id INTEGER NOT NULL, question TEXT NOT NULL, options TEXT NOT NULL, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS poll_votes (poll_id INTEGER, user_id INTEGER, choice INTEGER, PRIMARY KEY(poll_id, user_id));
+CREATE TABLE IF NOT EXISTS email_tokens (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, expires_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS premium_unlocks (user_id INTEGER, month TEXT, n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(user_id, month));
+`);
+addColumn('users', 'plan_until', 'INTEGER NOT NULL DEFAULT 0');       // premium active while plan_until > now
+addColumn('users', 'stripe_customer', 'TEXT');
+addColumn('users', 'stripe_sub', 'TEXT');
+addColumn('users', 'sub_cancel', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('users', 'token_version', 'INTEGER NOT NULL DEFAULT 0');    // bump to log out every device
+addColumn('users', 'email_verified', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('users', 'prefs', "TEXT NOT NULL DEFAULT '{}'");           // synced reader preferences (JSON)
+addColumn('series', 'monetization', "TEXT NOT NULL DEFAULT 'hybrid'"); // free | paid | hybrid
+addColumn('series', 'free_chapters', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('series', 'default_price', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('series', 'reading_dir', "TEXT NOT NULL DEFAULT 'vertical'"); // vertical | ltr | rtl (manga)
+addColumn('series', 'language', "TEXT NOT NULL DEFAULT 'en'");
+addColumn('series', 'tags', "TEXT NOT NULL DEFAULT ''");              // tropes
+addColumn('series', 'warnings', "TEXT NOT NULL DEFAULT ''");          // content warnings
+addColumn('chapters', 'draft', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('chapters', 'review', "TEXT NOT NULL DEFAULT 'ok'");        // ok | pending (held for copyright review)
+addColumn('chapters', 'words', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('comments', 'pinned', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('progress', 'page', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('progress', 'pct', 'REAL NOT NULL DEFAULT 0');
+db.prepare("UPDATE chapters SET words=LENGTH(content)-LENGTH(REPLACE(content,' ',''))+1 WHERE words=0 AND content IS NOT NULL").run();
+
 // ---- Business rules (single source of truth; exposed at /api/config) ----
 const RULES = {
   coinPacks: [
@@ -187,6 +237,11 @@ const RULES = {
   genres: ['Fantasy', 'Romance', 'Action', 'Sci-Fi', 'Horror', 'Comedy', 'Slice of Life', 'Mystery', 'Drama', 'Isekai', 'Superhero', 'Thriller'],
   checkinRewards: [5, 5, 10, 10, 15, 15, 30],   // 7-day streak ladder (funded from platform's share)
   reactions: ['🔥', '😂', '😭', '😮', '❤️'],
+  premium: { cents: 799, days: 31, monthlyUnlocks: 30, label: 'InkVerse Premium' },   // ad-free, unlimited highlights, 30 early-access unlocks/month
+  freeHighlightLimit: 25,
+  tags: ['Strong Female Lead', 'Revenge', 'Enemies to Lovers', 'Slow Burn', 'Overpowered MC', 'Reincarnation', 'Magic School', 'Found Family', 'Time Travel', 'Anti-Hero'],
+  warnings: ['Violence', 'Gore', 'Sexual Content', 'Strong Language', 'Self-Harm', 'Abuse'],
+  languages: { en: 'English', es: 'Español', pt: 'Português', fr: 'Français', ja: '日本語', ko: '한국어', ar: 'العربية' },
   channelTags: ['general', 'spoilers', 'theories', 'fan-art', 'recs'],
 };
 

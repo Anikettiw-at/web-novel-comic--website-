@@ -98,7 +98,7 @@ Run the automated checks with `npm test`.
 - [x] 30-day views and earnings charts
 - [x] Top chapters, top supporters, revenue mix
 - [x] Per-series earnings
-- [ ] Retention funnel per chapter (drop-off point)
+- [x] Retention funnel per chapter (drop-off point) — v3
 - [ ] Export CSV of earnings
 
 ## Phase 9 — Quality & operations
@@ -114,3 +114,22 @@ Run the automated checks with `npm test`.
 - [ ] Monitoring (error tracking, uptime), backups
 - [ ] Accessibility audit against WCAG 2.1 AA
 - [ ] Legal review of Terms, Privacy Policy, DMCA agent registration
+
+## Phase 10 — v3: tiers, reader experience, copyright, creator tools
+- [x] **Free tier vs Premium** — free = ad-supported (house ads), 25 highlights, coins/wait for early access; Premium ($7.99/mo) = no ads, unlimited highlights, 30 early-access unlocks/month (creators are still paid for each). Demo grant locally; Stripe subscription Checkout + webhook (`checkout.session.completed`, `invoice.paid`, `customer.subscription.deleted`) in production; cancel keeps access to period end
+- [x] **Per-series monetisation** — Free · Paid · Hybrid ("first N chapters free"), default price, per-chapter override, wait-for-free
+- [x] **Animated page turning** — 3D leaf flips around the spine for comics and for novel "Book view"; honours *reduce motion*; setting synced to the account
+- [x] **Manga mode** — right-to-left reading, double-page spreads on wide screens, RTL tap zones / swipe / arrow keys; series can default to manga; vertical-scroll and left-to-right paged modes too
+- [x] **Persistent highlights** — novel text selection (4 colours + note) and comic panel boxes; stored per user/chapter, re-anchored if text moves, "My highlights" page, edit/delete, free-tier cap
+- [x] **Copyright check on every new upload** — SHA-256 + perceptual image hash, text shingle overlap, protected-works registry, auto-block / hold-for-review / pass, admin review console, signed ownership proof, upload rate limit
+- [x] Reader: themes (light/sepia/dark/black), fonts incl. easy-read, size & line spacing, text-to-speech, word count + minutes left, page-level progress, offline save, paid-chapter copy deterrents + per-reader watermark
+- [x] Creator: drafts, edit/publish/delete chapters, retention + free→paid conversion table, comment moderation (pin/delete), chapter polls, tags/tropes, content warnings, language, manga direction
+- [x] Discovery: charts (Rising · Top paid · Top free · Completed · New · New-creator spotlight), 30-day trending boost for new series, related series, tag / status / price / language / content-warning filters
+- [x] Accounts: email verification, change password, sign out everywhere, data export, account deletion, `REQUIRE_VERIFIED`, `/healthz`
+- [x] Tests: `npm test` runs 48 original + 95 v3 end-to-end checks
+- [ ] Image-copy search against the open web (TinEye / Copyleaks / Google Vision) — current check only knows works uploaded here + the protected registry
+- [ ] Visible image watermarking on paid comic pages (server-side compositing) and per-reader forensic marks
+- [ ] Inline per-paragraph / per-panel comments, creator Q&A, fan-art gallery
+- [ ] Translation workflow (community or AI-assisted with human approval), auto-lettering
+- [ ] Membership tiers / merch / commission board, contests with cash prizes
+- [ ] Native apps and CDN image delivery; creator audience demographics (needs consent-based data collection)

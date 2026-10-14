@@ -95,6 +95,21 @@ Sources: Publishers Weekly (Webtoon Fast Pass interview), Taddy blog on Webtoon 
 ### 4.6 Trust & safety
 - Layered moderation (see §7), appeals, audit log, admin-editable word filter, DMCA workflow, mature-content gate, rate limiting.
 
+
+### 4.7 v3 additions
+
+**Plans.** *Free*: every free chapter, ad-supported (house ads between chapters), 25 saved highlights, early access via coins or by waiting. *Premium* ($7.99/month): no ads, unlimited highlights, 30 early-access unlocks a month. A Premium unlock still pays the creator (half the coin rate, funded by the subscription). Per series the creator picks **Free**, **Paid** or **Hybrid** (first N chapters free).
+
+**Reading.** Scroll, *Paged* and *Manga* modes for comics; *Scroll* and *Book* view for novels. Pages turn with a CSS-3D leaf hinged at the spine (right edge for right-to-left). Manga mode reads right-to-left with double-page spreads on wide screens. Novels paginate with CSS columns and are measured after fonts load. Themes, font, size, spacing, animation and spread preferences are saved locally and synced to the account. Text-to-speech uses the browser's voices. Progress is saved per chapter (page for comics, percent for novels) with minutes-left estimates. Chapters can be saved for offline reading (Cache API, cleared on logout).
+
+**Highlights.** A highlight is `(chapter, paragraph, start, end, text, colour, note)` for novels or `(chapter, page, x%, y%, w%, h%)` for comic panels. The server verifies the text against the chapter before saving and refuses overlaps, so highlights survive reloads and devices; if text ever shifts the client re-anchors by searching for the stored passage.
+
+**Copyright check.** Every new cover, comic page and novel chapter is fingerprinted before it is published and compared with other creators' uploads and with an admin-managed protected-works registry. Images: SHA-256 and a 64-bit difference hash (Hamming distance ≤ 6; blank pages ignored). Text: sampled 5-word shingles, containment ratio. Outcomes: **block** (≥ 80 % of pages / text, or ≥ 50 % of a protected work), **hold for review** (any matching page, or ≥ 30 % text overlap) — hidden from readers until an admin approves — or **pass**. A signed ownership statement (hash + timestamp) can be downloaded per chapter. Limitation: it recognises material InkVerse has already seen; it cannot search the open web, so the DMCA workflow stays in place.
+
+**Fairness.** Charts rank by reader activity, never by spend. New series get a 1.5× trending multiplier for 30 days and a spotlight shelf.
+
+**Anti-piracy deterrents (paid chapters).** Copy / cut / right-click / drag blocked, print hidden, faint per-reader watermark. These raise the effort; they cannot stop screenshots.
+
 ---
 
 ## 5. Architecture

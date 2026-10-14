@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server/index.js",
     "seed": "node server/seed.js",
-    "test": "node server/smoke-test.js",
+    "test": "node server/smoke-test.js && node server/v3-test.js",
     "start:env": "node --env-file=.env server/index.js",
     "build:downloads": "node scripts/build-downloads.js"
   },
@@ -23,6 +23,7 @@
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.4.0",
     "nodemailer": "^10.1.0",
+    "sharp": "^0.34.5",
     "ws": "^8.22.0"
   },
   "devDependencies": {

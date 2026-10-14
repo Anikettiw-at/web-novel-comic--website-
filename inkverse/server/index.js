@@ -12,6 +12,7 @@ const { WebSocketServer } = require('ws');
 const { db, RULES } = require('./db');
 const { screenText, fileReport, addStrike } = require('./moderation');
 const payments = require('./payments');
+const copyright = require('./copyright');
 
 const PORT = process.env.PORT || 3000;
 const DAY = 24 * 3600 * 1000;
@@ -46,18 +47,20 @@ app.use(helmet({
 payments.mountWebhook(app); // raw body required for signature check, so it must precede express.json
 app.use(express.json({ limit: '2mb' }));
 app.use('/api/', rateLimit({ windowMs: 60_000, limit: 400, standardHeaders: true, legacyHeaders: false }));
+const uploadLimiter = rateLimit({ windowMs: 3600_000, limit: 120, standardHeaders: true, legacyHeaders: false, message: { error: 'Upload limit reached for this hour. Please try again later.' } });   // chapter uploads run image/copyright analysis
 const authLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 30, message: { error: 'Too many attempts, try later.' } });
 
 // ---------- helpers ----------
 const wrap = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 const fail = (res, code, error) => res.status(code).json({ error });
 const publicUser = u => u && ({ id: u.id, username: u.username, role: u.role, bio: u.bio, adult: !!u.adult, coins: u.coins,
-  payout_email: u.payout_email, tax_ok: !!u.tax_ok, streak: u.streak, can_checkin: u.last_checkin !== Math.floor(Date.now() / DAY), strikes: u.strikes, muted_until: u.muted_until, created_at: u.created_at });
+  payout_email: u.payout_email, tax_ok: !!u.tax_ok, streak: u.streak, can_checkin: u.last_checkin !== Math.floor(Date.now() / DAY), strikes: u.strikes, muted_until: u.muted_until, created_at: u.created_at,
+  premium: u.plan_until > Date.now(), plan_until: u.plan_until || null, sub_cancel: !!u.sub_cancel, email_verified: !!u.email_verified });
 const userFromToken = token => {
   try {
-    const { id } = jwt.verify(token, SECRET);
+    const { id, v } = jwt.verify(token, SECRET);
     const u = db.prepare('SELECT * FROM users WHERE id=?').get(id);
-    return u && !u.banned ? u : null;
+    return u && !u.banned && (v ?? 0) === u.token_version ? u : null;   // token_version bump = "log out everywhere"
   } catch { return null; }
 };
 app.use((req, res, next) => {
@@ -68,7 +71,8 @@ app.use((req, res, next) => {
 const needAuth = (req, res, next) => req.user ? next() : fail(res, 401, 'Please log in.');
 const needRole = (...roles) => (req, res, next) =>
   !req.user ? fail(res, 401, 'Please log in.') : roles.includes(req.user.role) ? next() : fail(res, 403, 'Not allowed for your account type.');
-const sign = u => jwt.sign({ id: u.id }, SECRET, { expiresIn: '14d' });
+const sign = u => jwt.sign({ id: u.id, v: u.token_version }, SECRET, { expiresIn: '14d' });
+const needVerified = (req, res, next) => process.env.REQUIRE_VERIFIED === 'true' && !req.user.email_verified ? fail(res, 403, 'Please confirm your email address first (check your inbox, or resend from your profile menu).') : next();
 const notify = (userId, text, link) => db.prepare('INSERT INTO notifications(user_id,text,link,created_at) VALUES(?,?,?,?)').run(userId, text, link || null, now());
 const clean = (s, max) => String(s ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').trim().slice(0, max);
 
@@ -105,6 +109,7 @@ const upload = multer({
 app.use('/uploads', express.static(upDir, { maxAge: '7d', setHeaders: r => r.setHeader('X-Content-Type-Options', 'nosniff') }));
 
 // ---------- config & auth ----------
+app.get('/healthz', (req, res) => { try { db.prepare('SELECT 1').get(); res.json({ ok: true, uptime: Math.round(process.uptime()) }); } catch { res.status(503).json({ ok: false }); } });
 app.get('/api/config', (req, res) => res.json({ ...RULES, creatorShareUnlockPct: RULES.creatorShareUnlock * 100, payments: payments.paymentsMode() }));
 
 app.post('/api/auth/register', authLimiter, wrap(async (req, res) => {
@@ -119,6 +124,7 @@ app.post('/api/auth/register', authLimiter, wrap(async (req, res) => {
     .run(username, email, await bcrypt.hash(password, 10), role, req.body.adult === true ? 1 : 0, now());
   const u = db.prepare('SELECT * FROM users WHERE id=?').get(info.lastInsertRowid);
   notify(u.id, 'Welcome to InkVerse! Be kind, tag your spoilers, and enjoy.');
+  app.sendVerification?.(u, req)?.catch?.(e => console.error('verification mail error', e.message));
   res.json({ token: sign(u), user: publicUser(u) });
 }));
 app.post('/api/auth/login', authLimiter, wrap(async (req, res) => {
@@ -145,23 +151,29 @@ app.post('/api/me/become-creator', needAuth, (req, res) => {
 
 // ---------- series ----------
 const seriesSelect = `SELECT s.*, u.username AS creator,
-  (SELECT COUNT(*) FROM chapters c WHERE c.series_id=s.id AND c.publish_at<=@now) AS chapter_count,
+  (SELECT COUNT(*) FROM chapters c WHERE c.series_id=s.id AND c.publish_at<=@now AND c.draft=0 AND c.review='ok') AS chapter_count,
   (SELECT COUNT(*) FROM follows f WHERE f.series_id=s.id) AS followers,
   (SELECT COUNT(*) FROM likes l WHERE l.series_id=s.id) AS likes,
   (SELECT ROUND(AVG(stars),2) FROM ratings r WHERE r.series_id=s.id) AS rating,
-  (SELECT MAX(publish_at) FROM chapters c WHERE c.series_id=s.id AND c.publish_at<=@now) AS updated_at
+  (SELECT MAX(publish_at) FROM chapters c WHERE c.series_id=s.id AND c.publish_at<=@now AND c.draft=0 AND c.review='ok') AS updated_at
   FROM series s JOIN users u ON u.id=s.creator_id`;
 const coverOf = s => s.cover || `/gen/cover/${s.id}.svg`;
-const shapeSeries = s => ({ ...s, cover: coverOf(s), genres: s.genres ? s.genres.split(',') : [], mature: !!s.mature });
+const list = v => v ? v.split(',') : [];
+const shapeSeries = s => ({ ...s, cover: coverOf(s), genres: list(s.genres), tags: list(s.tags), warnings: list(s.warnings), mature: !!s.mature });
 
 app.get('/api/series', (req, res) => {
-  const { q, type, genre, sort = 'trending', creator } = req.query;
-  let where = "s.status!='removed'"; const params = { now: now() };
+  const { q, type, genre, sort = 'trending', creator, status, monetization, language, tag, safe } = req.query;
+  let where = "s.status!='removed'"; const params = { now: now(), boost: now() - 30 * DAY };
   if (q) { where += ' AND (s.title LIKE @q OR s.synopsis LIKE @q OR u.username LIKE @q)'; params.q = `%${clean(q, 60)}%`; }
   if (type === 'comic' || type === 'novel') { where += ' AND s.type=@type'; params.type = type; }
   if (genre) { where += " AND (',' || s.genres || ',') LIKE @genre"; params.genre = `%,${clean(genre, 30)},%`; }
   if (creator) { where += ' AND s.creator_id=@creator'; params.creator = Number(creator); }
-  const order = { new: 'updated_at DESC', top: 'rating DESC, likes DESC', trending: '(s.views + likes*20 + followers*30) DESC' }[sort] || 'updated_at DESC';
+  if (['ongoing', 'completed', 'hiatus'].includes(status)) { where += ' AND s.status=@status'; params.status = status; }
+  if (['free', 'paid', 'hybrid'].includes(monetization)) { where += ' AND s.monetization=@mon'; params.mon = monetization; }
+  if (RULES.languages[language]) { where += ' AND s.language=@lang'; params.lang = language; }
+  if (tag) { where += " AND (',' || s.tags || ',') LIKE @tag"; params.tag = `%,${clean(tag, 40)},%`; }
+  if (safe) for (const [i, w] of String(safe).split(',').filter(w => RULES.warnings.includes(w)).entries()) { where += ` AND (',' || s.warnings || ',') NOT LIKE @sw${i}`; params['sw' + i] = `%,${w},%`; }   // hide content warnings
+  const order = { new: 'updated_at DESC', top: 'rating DESC, likes DESC', trending: '(s.views + likes*20 + followers*30) * (CASE WHEN s.created_at > @boost THEN 1.5 ELSE 1 END) DESC'   /* new-creator boost, 30 days, published in the Creator Program rules */ }[sort] || 'updated_at DESC';
   const rows = db.prepare(`${seriesSelect} WHERE ${where} AND chapter_count>0 ORDER BY ${order} LIMIT 60`).all(params);
   res.json(rows.map(shapeSeries));
 });
@@ -173,9 +185,9 @@ app.get('/api/series/:id', (req, res) => {
   db.prepare('UPDATE series SET views=views+1 WHERE id=?').run(id);
   db.prepare('INSERT INTO view_log(series_id,day,views) VALUES(?,?,1) ON CONFLICT(series_id,day) DO UPDATE SET views=views+1').run(id, new Date().toISOString().slice(0, 10));
   const own = req.user && (req.user.id === s.creator_id || req.user.role === 'admin');
-  const rows = db.prepare(`SELECT id,number,title,price_coins,publish_at,free_at,views FROM chapters WHERE series_id=? ${own ? '' : 'AND publish_at<=?'} ORDER BY number`).all(...(own ? [id] : [id, now()]));
+  const rows = db.prepare(`SELECT id,number,title,price_coins,publish_at,free_at,views,draft,review,words FROM chapters WHERE series_id=? ${own ? '' : "AND publish_at<=? AND draft=0 AND review='ok'"} ORDER BY number`).all(...(own ? [id] : [id, now()]));
   const unlocked = req.user ? new Set(db.prepare('SELECT chapter_id FROM unlocks WHERE user_id=?').all(req.user.id).map(r => r.chapter_id)) : new Set();
-  const chapters = rows.map(c => ({ ...c, scheduled: c.publish_at > now(),
+  const chapters = rows.map(c => ({ ...c, draft: !!c.draft, held: c.review !== 'ok', scheduled: c.publish_at > now() && !c.draft,
     locked: !own && c.price_coins > 0 && !(c.free_at && c.free_at <= now()) && !unlocked.has(c.id) }));
   const me = req.user ? {
     following: !!db.prepare('SELECT 1 FROM follows WHERE user_id=? AND series_id=?').get(req.user.id, id),
@@ -187,22 +199,37 @@ app.get('/api/series/:id', (req, res) => {
   res.json({ ...shapeSeries(s), chapters, me, channels, own: !!own });
 });
 
-app.post('/api/series', needRole('creator', 'admin'), upload.single('cover'), (req, res) => {
+const pick = (v, allowed, dflt) => allowed.includes(v) ? v : dflt;
+const csvOf = (v, allowed, max) => String(v || '').split(',').map(g => g.trim()).filter(g => allowed.includes(g)).slice(0, max).join(',');
+app.post('/api/series', needRole('creator', 'admin'), needVerified, upload.single('cover'), wrap(async (req, res) => {
   const b = req.body, title = clean(b.title, 80);
-  if (title.length < 2) return fail(res, 400, 'Title is required.');
-  if (!['comic', 'novel'].includes(b.type)) return fail(res, 400, 'Type must be comic or novel.');
-  const genres = String(b.genres || '').split(',').map(g => g.trim()).filter(g => RULES.genres.includes(g)).slice(0, 4).join(',');
-  const info = db.prepare('INSERT INTO series(creator_id,title,type,synopsis,genres,cover,schedule,mature,created_at) VALUES(?,?,?,?,?,?,?,?,?)').run(
-    req.user.id, title, b.type, clean(b.synopsis, 1500), genres, req.file ? '/uploads/' + req.file.filename : null,
-    b.schedule === 'bulk' ? 'bulk' : 'weekly', b.mature === 'true' || b.mature === '1' || b.mature === true ? 1 : 0, now());
+  const drop = () => req.file && fs.unlink(req.file.path, () => {});
+  if (title.length < 2) { drop(); return fail(res, 400, 'Title is required.'); }
+  if (!['comic', 'novel'].includes(b.type)) { drop(); return fail(res, 400, 'Type must be comic or novel.'); }
+  if (req.file) {   // cover must not be a copyrighted image
+    const chk = await copyright.checkUpload({ ownerId: req.user.id, files: [req.file] });
+    if (chk.verdict !== 'pass') { drop(); return fail(res, 422, 'This cover image matches existing copyrighted artwork. Please upload your own cover.'); }
+  }
+  const mon = pick(b.monetization, ['free', 'paid', 'hybrid'], 'hybrid');
+  const info = db.prepare('INSERT INTO series(creator_id,title,type,synopsis,genres,cover,schedule,mature,created_at,monetization,free_chapters,default_price,reading_dir,language,tags,warnings) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(
+    req.user.id, title, b.type, clean(b.synopsis, 1500), csvOf(b.genres, RULES.genres, 4), req.file ? '/uploads/' + req.file.filename : null,
+    b.schedule === 'bulk' ? 'bulk' : 'weekly', b.mature === 'true' || b.mature === '1' || b.mature === true ? 1 : 0, now(),
+    mon, mon === 'hybrid' ? Math.max(0, Math.min(200, parseInt(b.free_chapters, 10) || 0)) : 0,
+    mon === 'free' ? 0 : Math.max(0, Math.min(RULES.maxCoinsPerChapter, parseInt(b.default_price, 10) || 0)),
+    pick(b.reading_dir, ['vertical', 'ltr', 'rtl'], b.type === 'comic' ? 'vertical' : 'ltr'), RULES.languages[b.language] ? b.language : 'en', csvOf(b.tags, RULES.tags, 6), csvOf(b.warnings, RULES.warnings, 6));
   res.json({ id: info.lastInsertRowid });
-});
+}));
 app.patch('/api/series/:id', needAuth, (req, res) => {
   const s = db.prepare('SELECT * FROM series WHERE id=?').get(Number(req.params.id));
   if (!s || (s.creator_id !== req.user.id && req.user.role !== 'admin')) return fail(res, 403, 'Not your series.');
   const status = ['ongoing', 'completed', 'hiatus'].includes(req.body.status) && s.status !== 'removed' ? req.body.status : s.status;
   const schedule = ['weekly', 'bulk'].includes(req.body.schedule) ? req.body.schedule : s.schedule;
-  db.prepare('UPDATE series SET status=?, schedule=?, synopsis=? WHERE id=?').run(status, schedule, req.body.synopsis !== undefined ? clean(req.body.synopsis, 1500) : s.synopsis, s.id);
+  const mon = pick(req.body.monetization, ['free', 'paid', 'hybrid'], s.monetization), b = req.body;
+  db.prepare('UPDATE series SET status=?, schedule=?, synopsis=?, monetization=?, free_chapters=?, default_price=?, reading_dir=?, language=?, tags=?, warnings=? WHERE id=?').run(status, schedule, req.body.synopsis !== undefined ? clean(req.body.synopsis, 1500) : s.synopsis,
+    mon, b.free_chapters !== undefined ? Math.max(0, Math.min(200, parseInt(b.free_chapters, 10) || 0)) : s.free_chapters,
+    b.default_price !== undefined ? Math.max(0, Math.min(RULES.maxCoinsPerChapter, parseInt(b.default_price, 10) || 0)) : s.default_price,
+    pick(b.reading_dir, ['vertical', 'ltr', 'rtl'], s.reading_dir), RULES.languages[b.language] ? b.language : s.language,
+    b.tags !== undefined ? csvOf(b.tags, RULES.tags, 6) : s.tags, b.warnings !== undefined ? csvOf(b.warnings, RULES.warnings, 6) : s.warnings, s.id);
   res.json({ ok: true });
 });
 
@@ -216,12 +243,16 @@ function resolvePublishAt(b, series, indexInBatch = 0) {
   if (b.publish_mode === 'weekly') return nextWeeklySlot(series.id);
   return now() - 1000 + indexInBatch; // 'now' (bulk release)
 }
-function priceFields(b, publishAt) {
+function priceFields(b, publishAt, series, number) {
   let price = parseInt(b.price_coins || 0, 10) || 0;
+  if (series?.monetization === 'free') price = 0;
+  else if (series?.monetization === 'paid' && !price) price = series.default_price;
+  else if (series?.monetization === 'hybrid') price = number <= series.free_chapters ? 0 : (price || series.default_price);   // first N chapters always free
   if (price && (price < RULES.minCoinsPerChapter || price > RULES.maxCoinsPerChapter)) throw new Error(`Premium price must be ${RULES.minCoinsPerChapter}-${RULES.maxCoinsPerChapter} coins (or 0 for free).`);
   const days = Math.min(parseInt(b.free_after_days || 0, 10) || 0, RULES.maxFreeAfterDays);
   return { price, free_at: price && days > 0 ? publishAt + days * DAY : null };
 }
+const wordCount = t => (String(t || '').trim().match(/\S+/g) || []).length;
 const ownSeries = (req, res) => {
   const s = db.prepare('SELECT * FROM series WHERE id=?').get(Number(req.params.id));
   if (!s || (s.creator_id !== req.user.id && req.user.role !== 'admin')) { fail(res, 403, 'Not your series.'); return null; }
@@ -230,70 +261,110 @@ const ownSeries = (req, res) => {
 };
 const nextNumber = sid => (db.prepare('SELECT MAX(number) m FROM chapters WHERE series_id=?').get(sid).m || 0) + 1;
 
-app.post('/api/series/:id/chapters', needRole('creator', 'admin'), upload.array('pages', 80), (req, res) => {
-  const s = ownSeries(req, res); if (!s) return;
+app.post('/api/series/:id/chapters', needRole('creator', 'admin'), needVerified, uploadLimiter, upload.array('pages', 80), wrap(async (req, res) => {
+  const files = req.files || [], drop = () => files.forEach(f => fs.unlink(f.path, () => {}));
+  const s = ownSeries(req, res); if (!s) return drop();
   const b = req.body, title = clean(b.title, 100);
-  if (!title) return fail(res, 400, 'Chapter title is required.');
-  let content = null, pages = null;
+  if (!title) { drop(); return fail(res, 400, 'Chapter title is required.'); }
+  let content = null, pages = null, sorted = files;
   if (s.type === 'novel') { content = clean(b.content, 200000); if (content.length < 50) return fail(res, 400, 'Novel chapter needs at least 50 characters.'); }
   else {
-    const files = (req.files || []).sort((a, z) => a.originalname.localeCompare(z.originalname, undefined, { numeric: true }));
-    if (!files.length) return fail(res, 400, 'Upload at least one page image.');
-    pages = JSON.stringify(files.map(f => '/uploads/' + f.filename));
+    sorted = [...files].sort((a, z) => a.originalname.localeCompare(z.originalname, undefined, { numeric: true }));
+    if (!sorted.length) return fail(res, 400, 'Upload at least one page image.');
+    pages = JSON.stringify(sorted.map(f => '/uploads/' + f.filename));
+  }
+  // ---- copyright check on the new upload
+  const chk = await copyright.checkUpload({ ownerId: req.user.id, files: sorted, text: content });
+  if (chk.verdict === 'block') {
+    copyright.logCheck({ seriesId: s.id, userId: req.user.id, res: chk }); drop();
+    return res.status(422).json({ error: 'Upload blocked by copyright check. ' + copyright.explain(chk), copyright: { verdict: 'block', score: chk.score, matches: chk.matches } });
   }
   try {
-    const at = resolvePublishAt(b, s), { price, free_at } = priceFields(b, at);
-    const info = db.prepare('INSERT INTO chapters(series_id,number,title,content,pages,price_coins,publish_at,free_at,created_at,author_note) VALUES(?,?,?,?,?,?,?,?,?,?)')
-      .run(s.id, nextNumber(s.id), title, content, pages, price, at, free_at, now(), clean(b.author_note, 500) || null);
-    res.json({ id: info.lastInsertRowid, publish_at: at });
-  } catch (e) { fail(res, 400, e.message); }
-});
+    const draft = b.draft === 'true' || b.draft === true || b.draft === '1' ? 1 : 0;
+    const num = nextNumber(s.id), at = draft ? now() + 3650 * DAY : resolvePublishAt(b, s), { price, free_at } = priceFields(b, draft ? now() : at, s, num);
+    const held = chk.verdict === 'review';
+    const id = db.transaction(() => {
+      const info = db.prepare("INSERT INTO chapters(series_id,number,title,content,pages,price_coins,publish_at,free_at,created_at,author_note,draft,review,words) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        .run(s.id, num, title, content, pages, price, at, free_at, now(), clean(b.author_note, 500) || null, draft, held ? 'pending' : 'ok', wordCount(content));
+      copyright.store({ ownerId: req.user.id, seriesId: s.id, chapterId: info.lastInsertRowid, prints: chk.prints });
+      if (held) copyright.logCheck({ chapterId: info.lastInsertRowid, seriesId: s.id, userId: req.user.id, res: chk });
+      return info.lastInsertRowid;
+    })();
+    if (held) notify(req.user.id, 'Your chapter was held for a quick copyright review and will go live once approved.');
+    res.json({ id, publish_at: draft ? null : at, draft: !!draft, status: held ? 'pending_review' : draft ? 'draft' : 'ok', copyright: held ? { verdict: 'review', matches: chk.matches } : undefined });
+  } catch (e) { drop(); fail(res, 400, e.message); }
+}));
 // Bulk release for novels: chapters separated by lines starting with "# "
-app.post('/api/series/:id/chapters/bulk', needRole('creator', 'admin'), (req, res) => {
+app.post('/api/series/:id/chapters/bulk', needRole('creator', 'admin'), needVerified, uploadLimiter, wrap(async (req, res) => {
   const s = ownSeries(req, res); if (!s) return;
   if (s.type !== 'novel') return fail(res, 400, 'Bulk text import is for novels. For comics, upload each chapter.');
   const parts = String(req.body.text || '').split(/^# /m).map(p => p.trim()).filter(Boolean).slice(0, 100);
   if (!parts.length) return fail(res, 400, 'Start each chapter with a line like "# Chapter title".');
+  const checks = [];
+  for (const p of parts) {
+    const [t, ...rest] = p.split('\n'), body = rest.join('\n').trim(); if (body.length < 50) return fail(res, 400, `Chapter "${t}" is too short.`);
+    const chk = await copyright.checkUpload({ ownerId: req.user.id, text: clean(body, 200000) });
+    if (chk.verdict === 'block') { copyright.logCheck({ seriesId: s.id, userId: req.user.id, res: chk }); return res.status(422).json({ error: `Chapter "${clean(t, 60)}" was blocked by the copyright check. ` + copyright.explain(chk), copyright: { verdict: 'block', matches: chk.matches } }); }
+    checks.push(chk);
+  }
   try {
-    let n = nextNumber(s.id), last = null; const tx = db.transaction(() => {
+    let n = nextNumber(s.id), last = null, held = 0; const draft = req.body.draft === true || req.body.draft === 'true' ? 1 : 0;
+    db.transaction(() => {
       parts.forEach((p, i) => {
-        const [t, ...rest] = p.split('\n'); const body = rest.join('\n').trim();
-        if (body.length < 50) throw new Error(`Chapter "${t}" is too short.`);
-        const at = req.body.publish_mode === 'weekly' ? (last = last ? last + 7 * DAY : nextWeeklySlot(s.id)) : resolvePublishAt(req.body, s, i);
-        const { price, free_at } = priceFields(req.body, at);
-        db.prepare('INSERT INTO chapters(series_id,number,title,content,price_coins,publish_at,free_at,created_at) VALUES(?,?,?,?,?,?,?,?)')
-          .run(s.id, n++, clean(t, 100), clean(body, 200000), price, at, free_at, now());
+        const [t, ...rest] = p.split('\n'); const body = clean(rest.join('\n').trim(), 200000), chk = checks[i];
+        const at = draft ? now() + 3650 * DAY : req.body.publish_mode === 'weekly' ? (last = last ? last + 7 * DAY : nextWeeklySlot(s.id)) : resolvePublishAt(req.body, s, i);
+        const { price, free_at } = priceFields(req.body, draft ? now() : at, s, n);
+        const review = chk.verdict === 'review' ? 'pending' : 'ok'; if (review === 'pending') held++;
+        const id = db.prepare('INSERT INTO chapters(series_id,number,title,content,price_coins,publish_at,free_at,created_at,draft,review,words) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
+          .run(s.id, n++, clean(t, 100), body, price, at, free_at, now(), draft, review, wordCount(body)).lastInsertRowid;
+        copyright.store({ ownerId: req.user.id, seriesId: s.id, chapterId: id, prints: chk.prints });
+        if (review === 'pending') copyright.logCheck({ chapterId: id, seriesId: s.id, userId: req.user.id, res: chk });
       });
-    });
-    tx(); res.json({ created: parts.length });
+    })();
+    if (held) notify(req.user.id, `${held} imported chapter(s) were held for a quick copyright review.`);
+    res.json({ created: parts.length, held });
   } catch (e) { fail(res, 400, e.message); }
-});
+}));
+
+// Single source of truth for "can this person read this chapter?" (also used by highlights, polls, premium unlocks, progress)
+function chapterAccess(user, chapterId) {
+  const c = db.prepare('SELECT * FROM chapters WHERE id=?').get(chapterId); if (!c) return null;
+  const s = db.prepare('SELECT s.*, u.username creator FROM series s JOIN users u ON u.id=s.creator_id WHERE s.id=?').get(c.series_id);
+  const own = !!user && (user.id === s.creator_id || user.role === 'admin');
+  if (!own) {
+    if (s.status === 'removed') return { status: 410, error: 'This series was removed.' };
+    if (c.publish_at > now() || c.draft || c.review !== 'ok') return { status: 404, error: 'Chapter not released yet.' };
+    if (s.mature && !user?.adult) return { status: 403, error: 'Mature content: log in and confirm you are 18+ in your profile.' };
+  }
+  const unlocked = user && db.prepare('SELECT 1 FROM unlocks WHERE user_id=? AND chapter_id=?').get(user.id, c.id);
+  return { c, s, own, locked: !own && c.price_coins > 0 && !(c.free_at && c.free_at <= now()) && !unlocked };
+}
 
 app.get('/api/chapters/:id', (req, res) => {
-  const c = db.prepare('SELECT * FROM chapters WHERE id=?').get(Number(req.params.id));
-  if (!c) return fail(res, 404, 'Chapter not found.');
-  const s = db.prepare('SELECT s.*, u.username creator FROM series s JOIN users u ON u.id=s.creator_id WHERE s.id=?').get(c.series_id);
-  const own = req.user && (req.user.id === s.creator_id || req.user.role === 'admin');
-  if (s.status === 'removed' && !own) return fail(res, 410, 'This series was removed.');
-  if (c.publish_at > now() && !own) return fail(res, 404, 'Chapter not released yet.');
-  if (s.mature && !own && !req.user?.adult) return fail(res, 403, 'Mature content: log in and confirm you are 18+ in your profile.');
-  const unlocked = req.user && db.prepare('SELECT 1 FROM unlocks WHERE user_id=? AND chapter_id=?').get(req.user.id, c.id);
-  const locked = !own && c.price_coins > 0 && !(c.free_at && c.free_at <= now()) && !unlocked;
-  const sib = db.prepare('SELECT id,number FROM chapters WHERE series_id=? AND publish_at<=? ORDER BY number').all(s.id, own ? Infinity : now());
+  const a = chapterAccess(req.user, Number(req.params.id));
+  if (!a) return fail(res, 404, 'Chapter not found.'); if (a.status) return fail(res, a.status, a.error);
+  const { c, s, own, locked } = a;
+  const sib = db.prepare("SELECT id,number FROM chapters WHERE series_id=? AND publish_at<=? AND draft=0 AND review='ok' ORDER BY number").all(s.id, own ? Infinity : now());
   const idx = sib.findIndex(x => x.id === c.id);
   const base = { id: c.id, number: c.number, title: c.title, series_id: s.id, series_title: s.title, type: s.type, creator: s.creator, creator_id: s.creator_id,
-    price_coins: c.price_coins, free_at: c.free_at, locked, prev: sib[idx - 1]?.id || null, next: sib[idx + 1]?.id || null, publish_at: c.publish_at };
+    price_coins: c.price_coins, free_at: c.free_at, locked, prev: sib[idx - 1]?.id || null, next: sib[idx + 1]?.id || null, publish_at: c.publish_at,
+    reading_dir: s.reading_dir, language: s.language, words: c.words, premium_unlock: !!req.user && req.user.plan_until > now(), draft: !!c.draft, held: c.review !== 'ok' };
   if (locked) return res.json(base);
   db.prepare('UPDATE chapters SET views=views+1 WHERE id=?').run(c.id);
-  if (req.user) db.prepare('INSERT INTO progress(user_id,series_id,chapter_id,updated_at) VALUES(?,?,?,?) ON CONFLICT(user_id,series_id) DO UPDATE SET chapter_id=excluded.chapter_id, updated_at=excluded.updated_at').run(req.user.id, s.id, c.id, now());
+  if (req.user) {
+    db.prepare('INSERT INTO progress(user_id,series_id,chapter_id,updated_at) VALUES(?,?,?,?) ON CONFLICT(user_id,series_id) DO UPDATE SET chapter_id=excluded.chapter_id, updated_at=excluded.updated_at, page=CASE WHEN progress.chapter_id=excluded.chapter_id THEN progress.page ELSE 0 END, pct=CASE WHEN progress.chapter_id=excluded.chapter_id THEN progress.pct ELSE 0 END').run(req.user.id, s.id, c.id, now());
+    db.prepare('INSERT OR IGNORE INTO chapter_reads(user_id,chapter_id,series_id,first_at) VALUES(?,?,?,?)').run(req.user.id, c.id, s.id, now());
+  }
   const reactions = Object.fromEntries(db.prepare('SELECT emoji, COUNT(*) n FROM reactions WHERE chapter_id=? GROUP BY emoji').all(c.id).map(r => [r.emoji, r.n]));
   const mine = req.user ? db.prepare('SELECT emoji FROM reactions WHERE chapter_id=? AND user_id=?').all(c.id, req.user.id).map(r => r.emoji) : [];
-  res.json({ ...base, content: c.content, pages: c.pages ? JSON.parse(c.pages) : null, author_note: c.author_note, reactions, mine });
+  const resume = req.user ? db.prepare('SELECT page, pct FROM progress WHERE user_id=? AND chapter_id=?').get(req.user.id, c.id) : null;
+  res.json({ ...base, content: c.content, pages: c.pages ? JSON.parse(c.pages) : null, author_note: c.author_note, reactions, mine, resume,
+    protect: c.price_coins > 0 });   // paid chapters get copy protection + reader watermark on the client
 });
 
 app.post('/api/chapters/:id/unlock', needAuth, (req, res) => {
   const c = db.prepare('SELECT c.*, s.creator_id, s.title st FROM chapters c JOIN series s ON s.id=c.series_id WHERE c.id=?').get(Number(req.params.id));
-  if (!c || c.publish_at > now()) return fail(res, 404, 'Chapter not found.');
+  if (!c || c.publish_at > now() || c.draft || c.review !== 'ok') return fail(res, 404, 'Chapter not found.');
   if (!c.price_coins) return res.json({ ok: true });
   if (db.prepare('SELECT 1 FROM unlocks WHERE user_id=? AND chapter_id=?').get(req.user.id, c.id)) return res.json({ ok: true });
   const tx = db.transaction(() => {
@@ -332,12 +403,12 @@ app.get('/api/library', needAuth, (req, res) => {
   res.json({ following: f.map(shapeSeries), continue: cont.map(s => ({ ...shapeSeries(s), progress: prog[s.id] })) });
 });
 
-const commentShape = r => ({ id: r.id, body: r.body, created_at: r.created_at, user_id: r.user_id, username: r.username, role: r.role });
+const commentShape = r => ({ id: r.id, body: r.body, created_at: r.created_at, user_id: r.user_id, username: r.username, role: r.role, pinned: !!r.pinned });
 app.get('/api/chapters/:id/comments', (req, res) => {
-  res.json(db.prepare("SELECT c.*, u.username, u.role FROM comments c JOIN users u ON u.id=c.user_id WHERE chapter_id=? AND c.status='visible' ORDER BY c.id DESC LIMIT 100").all(Number(req.params.id)).map(commentShape));
+  res.json(db.prepare("SELECT c.*, u.username, u.role FROM comments c JOIN users u ON u.id=c.user_id WHERE chapter_id=? AND c.status='visible' ORDER BY c.pinned DESC, c.id DESC LIMIT 100").all(Number(req.params.id)).map(commentShape));
 });
 app.post('/api/chapters/:id/comments', needAuth, (req, res) => {
-  const ch = db.prepare('SELECT id FROM chapters WHERE id=? AND publish_at<=?').get(Number(req.params.id), now());
+  const ch = db.prepare("SELECT id FROM chapters WHERE id=? AND publish_at<=? AND draft=0 AND review='ok'").get(Number(req.params.id), now());
   if (!ch) return fail(res, 404, 'Chapter not found.');
   const r = screenText(req.user, req.body.body, { kind: 'comment' });
   if (!r.ok) return fail(res, 400, r.reason);
@@ -466,6 +537,7 @@ app.get('/api/admin/overview', admin, (req, res) => {
   const gross = db.prepare("SELECT COALESCE(SUM(cents),0) v FROM transactions WHERE type='purchase'").get().v;
   const owed = db.prepare('SELECT COALESCE(SUM(cents),0) v FROM earnings').get().v;
   res.json({ users: c('users'), series: c('series'), chapters: c('chapters'), openReports: db.prepare("SELECT COUNT(*) c FROM reports WHERE status='open'").get().c,
+    openCopyright: db.prepare("SELECT COUNT(*) c FROM copyright_checks WHERE status='open' AND verdict='review'").get().c,
     pendingPayouts: db.prepare("SELECT COUNT(*) c FROM payouts WHERE status='requested'").get().c, openDmca: db.prepare("SELECT COUNT(*) c FROM dmca WHERE status='open'").get().c,
     grossCents: gross, creatorEarnedCents: +owed.toFixed(2) });
 });
@@ -541,8 +613,10 @@ app.post('/api/admin/users/:id', admin, (req, res) => {
 });
 
 const audit = (req, action, target) => db.prepare('INSERT INTO audit(admin_id,action,target,created_at) VALUES(?,?,?,?)').run(req.user.id, action, String(target), now());
-payments.mountRoutes(app, { needAuth, fail });
-require('./account').mount(app, { authLimiter, fail });
+payments.mountRoutes(app, { needAuth, fail, needVerified });
+require('./account').mount(app, { authLimiter, fail, needAuth, publicUser, sign });
+copyright.mount(app, { needRole, fail, clean, notify, audit, secret: SECRET, upDir: upDir });
+require('./features')(app, { needAuth, needRole, fail, clean, notify, audit, seriesSelect, shapeSeries, chapterAccess, paymentsMode: payments.paymentsMode, stripeCall: payments.stripeCall });
 require('./advanced')(app, { needAuth, needRole, fail, clean, notify, audit, seriesSelect, shapeSeries });
 
 // ---------- downloads page: lists whatever `npm run build:downloads` produced ----------
@@ -615,7 +689,7 @@ wss.on('connection', ws => {
 
 // ---------- scheduler: notify followers when chapters go live ----------
 function releaseTick() {
-  const due = db.prepare('SELECT c.id,c.number,c.title,c.series_id,s.title st FROM chapters c JOIN series s ON s.id=c.series_id WHERE c.notified=0 AND c.publish_at<=?').all(now());
+  const due = db.prepare("SELECT c.id,c.number,c.title,c.series_id,s.title st FROM chapters c JOIN series s ON s.id=c.series_id WHERE c.notified=0 AND c.draft=0 AND c.review='ok' AND c.publish_at<=?").all(now());
   for (const c of due) {
     db.prepare('UPDATE chapters SET notified=1 WHERE id=?').run(c.id);
     for (const f of db.prepare('SELECT user_id FROM follows WHERE series_id=?').all(c.series_id)) notify(f.user_id, `New chapter: ${c.st} — #${c.number} ${c.title}`, `#/read/${c.id}`);
@@ -624,6 +698,7 @@ function releaseTick() {
 setInterval(releaseTick, 30_000); releaseTick();
 
 require('./seed').run();
+copyright.backfill().catch(e => console.error('fingerprint backfill failed', e.message));
 // ---------- automatic daily backups (kept in DATA_DIR/backups; also copy them off-server!) ----------
 async function backupTick() {
   try {
