@@ -216,6 +216,30 @@ addColumn('chapters', 'words', 'INTEGER NOT NULL DEFAULT 0');
 addColumn('comments', 'pinned', 'INTEGER NOT NULL DEFAULT 0');
 addColumn('progress', 'page', 'INTEGER NOT NULL DEFAULT 0');
 addColumn('progress', 'pct', 'REAL NOT NULL DEFAULT 0');
+
+// ---- v4: reviews, Q&A, creator profiles, contests, refunds, email alerts ----
+db.exec(`
+CREATE TABLE IF NOT EXISTS stripe_payments (session_id TEXT PRIMARY KEY, payment_intent TEXT, user_id INTEGER NOT NULL, coins INTEGER NOT NULL, cents INTEGER NOT NULL, reversed INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_sp_pi ON stripe_payments(payment_intent);
+CREATE TABLE IF NOT EXISTS qa (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE, user_id INTEGER NOT NULL,
+  question TEXT NOT NULL, answer TEXT, answered_at INTEGER, status TEXT NOT NULL DEFAULT 'visible', created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE, user_id INTEGER NOT NULL,
+  stars INTEGER NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'visible', created_at INTEGER NOT NULL, UNIQUE(series_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS review_votes (review_id INTEGER, user_id INTEGER, PRIMARY KEY(review_id, user_id));
+CREATE TABLE IF NOT EXISTS creator_follows (user_id INTEGER, creator_id INTEGER, PRIMARY KEY(user_id, creator_id));
+CREATE TABLE IF NOT EXISTS contests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', prize TEXT NOT NULL DEFAULT '',
+  ends_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'open',          -- open | closed
+  winner_series_id INTEGER, created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS contest_entries (contest_id INTEGER, series_id INTEGER, creator_id INTEGER NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(contest_id, series_id));
+CREATE TABLE IF NOT EXISTS contest_votes (contest_id INTEGER, user_id INTEGER, series_id INTEGER NOT NULL, PRIMARY KEY(contest_id, user_id));
+`);
+addColumn('users', 'email_notify', 'INTEGER NOT NULL DEFAULT 0');   // opt-in new-chapter emails
 db.prepare("UPDATE chapters SET words=LENGTH(content)-LENGTH(REPLACE(content,' ',''))+1 WHERE words=0 AND content IS NOT NULL").run();
 
 // ---- Business rules (single source of truth; exposed at /api/config) ----

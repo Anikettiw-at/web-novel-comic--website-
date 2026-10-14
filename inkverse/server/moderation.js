@@ -75,6 +75,7 @@ function fileReport({ reporterId, targetType, targetId, reason }) {
   if (n >= AUTO_HIDE_THRESHOLD) {
     if (targetType === 'message') { db.prepare("UPDATE messages SET status='hidden' WHERE id=?").run(targetId); autoHidden = true; }
     if (targetType === 'comment') { db.prepare("UPDATE comments SET status='hidden' WHERE id=?").run(targetId); autoHidden = true; }
+    if (targetType === 'review') { db.prepare("UPDATE reviews SET status='hidden' WHERE id=?").run(targetId); autoHidden = true; }
   }
   return { id: info.lastInsertRowid, autoHidden };
 }

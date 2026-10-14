@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server/index.js",
     "seed": "node server/seed.js",
-    "test": "node server/smoke-test.js && node server/v3-test.js",
+    "test": "node server/smoke-test.js && node server/v3-test.js && node server/v4-test.js",
     "start:env": "node --env-file=.env server/index.js",
     "build:downloads": "node scripts/build-downloads.js"
   },

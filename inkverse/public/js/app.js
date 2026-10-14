@@ -73,7 +73,7 @@ function renderNav() {
   bindSuggest();
 }
 function renderFooter() {
-  $('#footer').innerHTML = `<div><a href="#/terms">Terms & Community Guidelines</a><a href="#/creators">Creator Program</a><a href="#/dmca">Copyright / DMCA</a><a href="#/privacy">Privacy</a><a href="#/downloads">⬇ Downloads</a></div><p style="margin-top:12px">© ${new Date().getFullYear()} InkVerse${S.cfg.payments === 'demo' ? ' — demo mode: payments are simulated.' : '.'}</p>`;
+  $('#footer').innerHTML = `<div><a href="#/terms">Terms & Community Guidelines</a><a href="#/creators">Creator Program</a><a href="#/contests">Contests</a><a href="#/dmca">Copyright / DMCA</a><a href="#/privacy">Privacy</a><a href="#/downloads">⬇ Downloads</a></div><p style="margin-top:12px">© ${new Date().getFullYear()} InkVerse${S.cfg.payments === 'demo' ? ' — demo mode: payments are simulated.' : '.'}</p>`;
 }
 const showNotifs = guard(async () => {
   const list = S.notifs;
@@ -85,6 +85,7 @@ function showMenu() {
   modal(`<h2>${esc(u.username)}</h2><p class="muted">${u.role === 'admin' ? 'Moderator / Admin' : u.role === 'creator' ? 'Creator' : 'Reader'} · strikes: ${u.strikes}</p>
   <form class="form" id="prof" style="margin-top:14px"><label>Bio<textarea name="bio" maxlength="300">${esc(u.bio)}</textarea></label>
   <label class="check"><input type="checkbox" name="adult" ${u.adult ? 'checked' : ''}> I am 18 or older (needed to view mature series)</label>
+  <label class="check"><input type="checkbox" name="email_notify" ${u.email_notify ? 'checked' : ''}> Email me when series I follow publish a new chapter</label>
   <button class="btn">Save profile</button></form>
   <div class="row" style="margin-top:14px"><span class="chip ${u.premium ? 'active' : ''}">${u.premium ? '⭐ Premium' : 'Free plan'}</span><a class="btn ghost small" href="#/premium" id="m-prem">${u.premium ? 'Manage plan' : 'Upgrade'}</a><a class="btn ghost small" href="#/highlights" id="m-hl">🖍 My highlights</a><button type="button" class="btn ghost small" id="m-sec">🔐 Security & data</button></div>
   ${u.email_verified ? '' : '<p class="muted" style="margin-top:10px;font-size:13px">✉️ Email not confirmed. <a href="#" id="m-ver" style="text-decoration:underline">Resend confirmation link</a></p>'}
@@ -93,7 +94,7 @@ function showMenu() {
   <div class="row" style="margin-top:14px">${u.role === 'reader' ? '<button class="btn ghost" id="bc">Become a creator ✏️</button>' : ''}<button class="btn ghost" id="lo">Log out</button></div>`, (m, close) => {
     api('/me/badges').then(b => { $('#bdg', m).innerHTML = b.map(x => `<span class="chip ${x.earned ? 'active' : ''}" title="${esc(x.desc)}" style="${x.earned ? '' : 'opacity:.45;filter:grayscale(1)'}">${x.icon} ${esc(x.name)}</span>`).join(''); }).catch(() => {});
     $('#apf', m)?.addEventListener('submit', guard(async e => { e.preventDefault(); await api('/appeals', { method: 'POST', body: { text: e.target.text.value } }); toast('Appeal submitted. A moderator will review it.', 'ok'); close(); }));
-    $('#prof', m).onsubmit = guard(async e => { e.preventDefault(); const f = new FormData(e.target); S.user = await api('/me', { method: 'PATCH', body: { bio: f.get('bio'), adult: f.get('adult') === 'on' } }); toast('Profile saved', 'ok'); close(); renderNav(); });
+    $('#prof', m).onsubmit = guard(async e => { e.preventDefault(); const f = new FormData(e.target); S.user = await api('/me', { method: 'PATCH', body: { bio: f.get('bio'), adult: f.get('adult') === 'on', email_notify: f.get('email_notify') === 'on' } }); toast('Profile saved', 'ok'); close(); renderNav(); });
     $$('#m-prem,#m-hl', m).forEach(a => a.addEventListener('click', close));
     $('#m-sec', m).onclick = () => { close(); IV.securityModal(); };
     $('#m-ver', m)?.addEventListener('click', guard(async e => { e.preventDefault(); const r = await api('/auth/resend-verification', { method: 'POST' }); toast(r.sent ? 'Confirmation email sent.' : 'Email delivery is not configured on this server yet.', r.sent ? 'ok' : 'err'); }));
@@ -216,7 +217,7 @@ on(/^\/series\/(\d+)$/, async m => {
   const cont = me?.progress ? s.chapters.find(c => c.id === me.progress) : null;
   const html = `<div class="wrap"><div class="s-head"><img class="cover" src="${esc(s.cover)}" alt="${esc(s.title)}">
   <div><div class="row"><span class="chip active">${s.type === 'novel' ? '📖 Web novel' : '🎨 Comic'}</span>${s.mature ? '<span class="chip" style="background:#e5484d;color:#fff">18+</span>' : ''}<span class="chip">${esc(s.status)}</span><span class="chip">${s.schedule === 'weekly' ? '🗓 Weekly' : '📦 Batch release'}</span><span class="chip">${{ free: '🆓 Free', paid: '💎 Paid', hybrid: s.free_chapters ? `🎁 First ${s.free_chapters} chapters free` : '🎁 Free + early access' }[s.monetization]}</span>${s.reading_dir === 'rtl' ? '<span class="chip">📖 Manga (right-to-left)</span>' : ''}<span class="chip">🌐 ${esc(S.cfg.languages[s.language] || s.language)}</span>${s.status === 'removed' ? '<span class="chip" style="background:#e5484d;color:#fff">REMOVED</span>' : ''}</div>
-  <h1 style="margin:10px 0 6px">${esc(s.title)}</h1><p class="muted">by <b>${esc(s.creator)}</b> · ${s.genres.map(esc).join(' · ') || '—'}</p>
+  <h1 style="margin:10px 0 6px">${esc(s.title)}</h1><p class="muted">by <a href="#/creator/${s.creator_id}" style="text-decoration:underline"><b>${esc(s.creator)}</b></a> · ${s.genres.map(esc).join(' · ') || '—'}</p>
   ${s.tags.length ? `<div style="margin-top:8px">${s.tags.map(t => `<a class="chip" href="#/browse?tag=${encodeURIComponent(t)}">#${esc(t)}</a>`).join('')}</div>` : ''}
   ${s.warnings.length ? `<p style="margin-top:8px;font-size:13px">⚠️ <b>Content warnings:</b> ${s.warnings.map(esc).join(', ')}</p>` : ''}
   <div class="row" style="margin:14px 0"><span>★ <b>${s.rating || '—'}</b></span><span>❤️ <b id="lk">${s.likes}</b></span><span>👥 <b id="fl">${s.followers}</b></span><span>👁 <b>${s.views}</b></span><span>📚 <b>${s.chapter_count}</b> chapters</span></div>
@@ -228,10 +229,12 @@ on(/^\/series\/(\d+)$/, async m => {
   <div class="section-head"><h2>Chapters</h2></div><div id="chs">${s.chapters.length ? [...s.chapters].reverse().map(c => `<a class="chapter" href="#/read/${c.id}"><span class="num">${c.number}</span><span class="t">${esc(c.title)}<br><small class="muted">${c.draft ? 'Draft — only you can see this' : c.held ? 'Held for copyright review' : c.scheduled ? 'Goes live ' + dt(c.publish_at) : new Date(c.publish_at).toLocaleDateString()}${c.words ? ' · ' + c.words.toLocaleString() + ' words · ~' + Math.max(1, Math.round(c.words / 230)) + ' min' : ''}</small></span>
     ${c.scheduled ? '<span class="lock sched">⏰ Scheduled</span>' : c.locked ? `<span class="lock">🪙 ${c.price_coins}${c.free_at ? ' · free ' + new Date(c.free_at).toLocaleDateString() : ''}</span>` : c.price_coins ? '<span class="lock read">Unlocked</span>' : ''}</a>`).join('') : '<p class="muted">No chapters yet.</p>'}</div>
   ${rel.length ? `<div class="section-head"><h2>👀 You might also like</h2><span class="muted">${esc(rel[0].reason)}</span></div><div class="hscroll">${rel.map(card).join('')}</div>` : ''}
+  <div class="section-head"><h2>⭐ Reviews</h2></div><div id="reviews"></div>
   ${sup.length ? `<div class="section-head"><h2>🏆 Top supporters</h2></div><div class="row">${sup.map((x, i) => `<div class="card row" style="padding:12px 18px;gap:10px">${['🥇', '🥈', '🥉', '🎖️', '🎖️'][i]} ${avatar(x.username)}<div><b>${esc(x.username)}</b><br><small class="muted">🪙 ${x.coins} supported</small></div></div>`).join('')}</div>` : ''}
   <div class="section-head"><h2>💬 Discussion channels</h2><button class="btn small" id="newch">＋ Host a channel</button></div>
   <div id="chl">${s.channels.length ? s.channels.map(c => `<a class="chapter in" href="#/channel/${c.id}"><span class="ch-tag ${c.tag}">${c.tag === 'spoilers' ? '⚠ spoilers' : c.tag}</span><span class="t">${esc(c.name)}<br><small class="muted">${esc(c.description)}</small></span><span class="live">Join</span></a>`).join('') : '<p class="muted">No channels yet — start the first one!</p>'}</div></div>`;
   return { html, mount(v) {
+    IV.mountReviews?.($('#reviews', v), s);
     $('#fo', v).onclick = guard(async () => { if (!needLogin()) return; const r = await api(`/series/${s.id}/follow`, { method: 'POST' }); $('#fo').textContent = r.on ? '✓ Following' : '＋ Follow'; $('#fo').classList.toggle('on', r.on); $('#fl').textContent = +$('#fl').textContent + (r.on ? 1 : -1); toast(r.on ? "You'll be notified of new chapters" : 'Unfollowed', 'ok'); });
     $('#li', v).onclick = guard(async () => { if (!needLogin()) return; const r = await api(`/series/${s.id}/like`, { method: 'POST' }); $('#li').textContent = r.on ? '❤️ Liked' : '🤍 Like'; $('#li').classList.toggle('on', r.on); $('#lk').textContent = +$('#lk').textContent + (r.on ? 1 : -1); });
     $$('#stars button', v).forEach(b => b.onclick = guard(async () => { if (!needLogin()) return; await api(`/series/${s.id}/rate`, { method: 'POST', body: { stars: b.dataset.s } }); $$('#stars button').forEach(x => x.classList.toggle('on', +x.dataset.s <= +b.dataset.s)); toast('Thanks for rating!', 'ok'); }));
@@ -332,7 +335,7 @@ on(/^\/studio$/, async (m, p) => {
   <div class="card"><h3>💸 Payouts</h3><p class="muted" style="margin:6px 0 12px">Minimum payout ${money(d.minPayoutCents)}. Earnings are held ${d.holdDays} days to cover refunds/chargebacks. You earn ${S.cfg.creatorShareUnlockPct}% of chapter unlocks and ${S.cfg.creatorShareTip * 100}% of tips.</p>
   <form class="form" id="pf" style="grid-template-columns:1fr auto;align-items:end"><label>Payout email (PayPal/bank contact)<input name="payout_email" type="email" value="${esc(u.payout_email || '')}" required></label><span></span>
   <label class="check" style="grid-column:1/-1"><input type="checkbox" name="tax" ${u.tax_ok ? 'checked' : ''}> I confirm I own the rights to everything I publish and that I'm responsible for taxes on my earnings.</label>
-  <div class="row" style="grid-column:1/-1"><button class="btn ghost">Save payout settings</button><button type="button" class="btn" id="po" ${e.available >= d.minPayoutCents ? '' : 'disabled'}>Request payout ${money(e.available)}</button></div></form>
+  <div class="row" style="grid-column:1/-1"><button class="btn ghost">Save payout settings</button><button type="button" class="btn" id="po" ${e.available >= d.minPayoutCents ? '' : 'disabled'}>Request payout ${money(e.available)}</button><button type="button" class="btn ghost" id="csv">⬇ Export earnings (CSV)</button></div></form>
   ${d.payouts.length ? `<table style="margin-top:14px"><tbody>${d.payouts.map(p => `<tr><td>${dt(p.created_at)}</td><td>${money(p.cents)}</td><td>${p.status}</td></tr>`).join('')}</tbody></table>` : ''}</div>
   <div class="section-head"><h2>📈 Analytics · last 30 days</h2></div>
   <div class="row" style="align-items:stretch"><div class="card" style="flex:1;min-width:300px"><b>Views</b> <span class="muted">· ${an.views.reduce((a, b) => a + b, 0)} total</span>${chart(an.views, an.days, '#00d564', v => v + ' views')}</div>
@@ -343,6 +346,7 @@ on(/^\/studio$/, async (m, p) => {
   <div class="section-head"><h2>Your series</h2></div>${d.series.length ? `<div class="grid">${d.series.map(s => `<div>${card(s)}<small class="muted">💰 ${money(s.earned_cents)} · 👁 ${s.views}</small><br><a class="btn small ghost" href="#/studio/series/${s.id}" style="margin-top:6px">Manage</a></div>`).join('')}</div>` : '<p class="muted">You haven\'t published anything yet. Create your first series!</p>'}</div>`;
   return { html, mount(v) {
     $('#pf', v).onsubmit = guard(async ev => { ev.preventDefault(); const f = new FormData(ev.target); S.user = await api('/me', { method: 'PATCH', body: { payout_email: f.get('payout_email'), tax_ok: f.get('tax') === 'on' } }); toast('Payout settings saved', 'ok'); });
+    $('#csv', v).onclick = guard(async () => { const r = await fetch('/api/creator/earnings.csv', { headers: { Authorization: 'Bearer ' + S.token } }); if (!r.ok) throw new Error('Export failed'); const a = document.createElement('a'); a.href = URL.createObjectURL(await r.blob()); a.download = 'inkverse-earnings.csv'; a.click(); });
     $('#po', v).onclick = guard(async () => { await api('/creator/payout', { method: 'POST' }); toast('Payout requested — an admin will review it.', 'ok'); route(); });
   } };
 });

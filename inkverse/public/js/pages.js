@@ -1,7 +1,7 @@
 /* InkVerse extra pages: Premium, My highlights, Charts, Library (history + offline), email verification,
    admin copyright console, account security modal. */
 (() => {
-const { S, $, $$, esc, api, toast, guard, modal, money, dt, ago, on, card, route, renderNav, refreshMe, authModal } = IV;
+const { S, $, $$, esc, api, toast, guard, modal, money, dt, ago, on, card, route, renderNav, refreshMe, authModal, avatar } = IV;
 const needUser = msg => { if (!S.user) throw Object.assign(new Error(msg), { status: 401 }); };
 
 // ---------------- PREMIUM ----------------
@@ -98,4 +98,58 @@ IV.securityModal = () => modal(`<h2>🔐 Security & your data</h2>
     $('#exp', m).onclick = guard(async () => { const r = await fetch('/api/me/export', { headers: { Authorization: 'Bearer ' + S.token } }); if (!r.ok) throw new Error('Export failed'); const a = document.createElement('a'); a.href = URL.createObjectURL(await r.blob()); a.download = 'inkverse-my-data.json'; a.click(); });
     $('#del', m).onsubmit = guard(async e => { e.preventDefault(); if (!confirm('Really delete your account forever?')) return; await api('/me', { method: 'DELETE', body: { password: e.target.password.value } }); localStorage.removeItem('iv_token'); try { caches.delete('iv-offline'); } catch {} S.token = null; S.user = null; close(); renderNav(); location.hash = '#/'; toast('Your account was deleted.'); });
   });
+
+// ---------------- REVIEWS (on the series page) ----------------
+IV.mountReviews = async (box, s) => {
+  if (!box) return;
+  const draw = async () => {
+    const d = await api(`/series/${s.id}/reviews`).catch(() => null); if (!d) return; const { summary: sm } = d, max = Math.max(1, ...sm.dist);
+    box.innerHTML = `<div class="card"><div class="row" style="gap:28px;align-items:flex-start"><div style="text-align:center;min-width:110px"><div class="display" style="font-size:46px">${sm.avg ?? '—'}</div><div>${'★'.repeat(Math.round(sm.avg || 0))}${'☆'.repeat(5 - Math.round(sm.avg || 0))}</div><small class="muted">${sm.count} review${sm.count === 1 ? '' : 's'}</small></div>
+      <div style="flex:1;min-width:200px">${[5, 4, 3, 2, 1].map(n => `<div class="row" style="gap:8px"><small style="width:18px">${n}★</small><div class="rbar" style="flex:1"><i style="width:${sm.dist[n - 1] / max * 100}%"></i></div><small class="muted" style="width:24px">${sm.dist[n - 1]}</small></div>`).join('')}</div></div>
+      ${S.user && s.creator_id !== S.user.id ? (d.canReview ? `<form class="form" id="rvf" style="margin-top:16px"><b>Write a review</b><div class="stars" id="rvs">${[1, 2, 3, 4, 5].map(i => `<button type="button" data-s="${i}" aria-label="${i} stars">★</button>`).join('')}</div><textarea name="body" minlength="20" maxlength="2000" placeholder="What did you think? (no spoilers without ||spoiler|| tags)" required></textarea><div><button class="btn small">Post review</button></div></form>` : '<p class="muted" style="margin-top:12px;font-size:13px">Read at least one chapter to leave a review.</p>') : ''}</div>
+      <div id="rvl">${d.items.map(r => `<div class="comment" data-r="${r.id}">${avatar(r.username)}<div style="flex:1"><b>${esc(r.username)}</b> <span style="color:#ffb400">${'★'.repeat(r.stars)}</span><small class="muted"> ${ago(r.created_at)}</small><div style="white-space:pre-line">${IV.inline(r.body)}</div>
+        <button class="lnk muted" data-h="${r.id}">👍 Helpful (${r.helpful})</button><button class="lnk muted" data-rp="${r.id}">🚩 report</button>${r.mine ? `<button class="lnk muted" data-dr="${r.id}">🗑 delete</button>` : ''}</div></div>`).join('') || '<p class="muted" style="margin-top:12px">No reviews yet.</p>'}</div>`;
+    let stars = 0; $$('#rvs button', box).forEach(b => b.onclick = () => { stars = +b.dataset.s; $$('#rvs button', box).forEach(x => x.classList.toggle('on', +x.dataset.s <= stars)); });
+    $('#rvf', box)?.addEventListener('submit', guard(async e => { e.preventDefault(); if (!stars) return toast('Pick a star rating first', 'err'); await api(`/series/${s.id}/reviews`, { method: 'POST', body: { stars, body: e.target.body.value } }); toast('Thanks for your review!', 'ok'); draw(); }));
+    box.onclick = guard(async e => {
+      const h = e.target.closest('[data-h]'); if (h) { if (!needUserLogin()) return; await api(`/reviews/${h.dataset.h}/helpful`, { method: 'POST' }); draw(); }
+      const rp = e.target.closest('[data-rp]'); if (rp && IV.needLogin()) IV.reportModal('review', +rp.dataset.rp);
+      const dr = e.target.closest('[data-dr]'); if (dr && confirm('Delete your review?')) { await api(`/reviews/${dr.dataset.dr}`, { method: 'DELETE' }); draw(); } });
+  };
+  const needUserLogin = () => IV.needLogin();
+  draw();
+};
+
+// ---------------- PUBLIC CREATOR PROFILE ----------------
+on(/^\/creator\/(\d+)$/, async m => {
+  const c = await api('/creators/' + m[1]);
+  const html = `<div class="wrap"><div class="card row" style="gap:20px;padding:24px"><div style="transform:scale(1.8);margin:0 18px">${IV.avatar(c.username)}</div><div style="flex:1"><h1 class="display" style="font-size:38px">${esc(c.username)}</h1><p class="muted">${c.role === 'admin' ? 'InkVerse team · ' : ''}Creator since ${new Date(c.created_at).toLocaleDateString()}</p>${c.bio ? `<p style="margin-top:8px;max-width:620px">${esc(c.bio)}</p>` : ''}
+    <div class="row" style="margin-top:12px"><span>📚 <b>${c.totals.series}</b> series</span><span>👥 <b id="cf">${c.followers}</b> followers</span><span>👁 <b>${c.totals.views}</b> views</span></div></div>
+    ${S.user?.id === c.id ? '<a class="btn" href="#/studio">Open Studio</a>' : `<button class="btn ${c.following ? 'on' : ''}" id="cfo">${c.following ? '✓ Following' : '＋ Follow creator'}</button>`}</div>
+  <div class="section-head"><h2>Series by ${esc(c.username)}</h2></div>${c.series.length ? `<div class="grid">${c.series.map(card).join('')}</div>` : '<p class="muted">Nothing published yet.</p>'}</div>`;
+  return { html, mount(v) { $('#cfo', v)?.addEventListener('click', guard(async e => { if (!IV.needLogin()) return; const r = await api(`/creators/${c.id}/follow`, { method: 'POST' }); e.target.textContent = r.on ? '✓ Following' : '＋ Follow creator'; e.target.classList.toggle('on', r.on); $('#cf').textContent = +$('#cf').textContent + (r.on ? 1 : -1); toast(r.on ? "You'll hear about their new series" : 'Unfollowed', 'ok'); })); } };
+});
+
+// ---------------- CONTESTS ----------------
+const left = t => { const ms = t - Date.now(); if (ms <= 0) return 'ended'; const d = Math.floor(ms / 86400000); return d >= 1 ? d + ' day' + (d > 1 ? 's' : '') + ' left' : Math.max(1, Math.floor(ms / 3600000)) + 'h left'; };
+on(/^\/contests(?:\/(\d+))?$/, async m => {
+  if (m[1]) {
+    const c = await api('/contests/' + m[1]), open = c.status === 'open' && c.ends_at > Date.now();
+    const html = `<div class="wrap" style="max-width:900px"><a class="btn ghost small" href="#/contests">← All contests</a><div class="section-head"><h2>🎯 ${esc(c.title)}</h2><span class="chip ${open ? 'active' : ''}">${open ? left(c.ends_at) : 'closed'}</span></div>
+    <div class="card"><p>${esc(c.description)}</p>${c.prize ? `<p style="margin-top:8px">🏆 <b>Prize:</b> ${esc(c.prize)}</p>` : ''}<p class="muted" style="font-size:13px;margin-top:8px">Rules: creators enter one series each. Anyone who has read at least a chapter of an entry can cast one vote (changeable until the end); you can't vote for your own series. The entry with the most votes wins — ties go to the earlier entry. Prizes are arranged by InkVerse staff after the contest closes.</p></div>
+    ${open && c.mySeries.length && !c.entered ? `<form class="row card" id="ef" style="margin-top:14px"><b>Enter a series:</b><select name="series_id" style="padding:8px;border-radius:10px;border:1px solid var(--line);background:var(--bg)">${c.mySeries.map(s => `<option value="${s.id}">${esc(s.title)}</option>`).join('')}</select><button class="btn small">Enter contest</button></form>` : ''}
+    ${S.user?.role === 'admin' && open ? '<p style="margin-top:12px"><button class="btn danger small" id="close">Close contest now & pick winner</button></p>' : ''}
+    <div class="section-head"><h2>Entries</h2></div>${c.entries.map((e, i) => `<div class="chapter in ${c.winner_series_id === e.series_id ? 'winner' : ''}"><span class="num">${c.winner_series_id === e.series_id ? '🏆' : i + 1}</span><a class="t" href="#/series/${e.series_id}">${esc(e.title)}<br><small class="muted">by ${esc(e.creator)} · ${e.votes} vote${e.votes === 1 ? '' : 's'}</small></a>${open ? `<button class="btn small ${e.mine ? 'on' : ''}" data-v="${e.series_id}">${e.mine ? '✓ Your vote' : 'Vote'}</button>` : ''}</div>`).join('') || '<p class="muted">No entries yet.</p>'}</div>`;
+    return { html, mount(v) {
+      $('#ef', v)?.addEventListener('submit', guard(async e => { e.preventDefault(); await api(`/contests/${c.id}/enter`, { method: 'POST', body: { series_id: e.target.series_id.value } }); toast('Entered — good luck!', 'ok'); route(); }));
+      $('#close', v)?.addEventListener('click', guard(async () => { if (!confirm('Close this contest and pick the winner?')) return; await api(`/admin/contests/${c.id}/close`, { method: 'POST' }); route(); }));
+      v.addEventListener('click', guard(async e => { const b = e.target.closest('[data-v]'); if (!b) return; if (!IV.needLogin()) return; await api(`/contests/${c.id}/vote`, { method: 'POST', body: { series_id: +b.dataset.v } }); toast('Vote saved', 'ok'); route(); }));
+    } };
+  }
+  const list = await api('/contests');
+  const html = `<div class="wrap" style="max-width:900px"><div class="section-head" style="margin-top:0"><h2>🎯 Contests & challenges</h2></div><p class="muted" style="margin-bottom:16px">Open to every creator, judged by reader votes — not by who spends the most.</p>
+  ${S.user?.role === 'admin' ? `<form class="form card" id="nc" style="margin-bottom:18px"><b>New contest (admin)</b><label>Title<input name="title" required maxlength="80"></label><label>Description<textarea name="description" maxlength="1000"></textarea></label><label>Prize<input name="prize" maxlength="200" placeholder="e.g. $500 + homepage feature"></label><label>Runs for (days)<input name="days" type="number" min="1" max="90" value="14"></label><button class="btn small">Create contest</button></form>` : ''}
+  ${list.map(c => `<a class="chapter in" href="#/contests/${c.id}"><span class="ch-tag ${c.status === 'open' ? 'recs' : 'spoilers'}">${c.status === 'open' && c.ends_at > Date.now() ? left(c.ends_at) : 'closed'}</span><span class="t">${esc(c.title)}<br><small class="muted">${c.entries} entries${c.prize ? ' · 🏆 ' + esc(c.prize) : ''}${c.winner ? ' · winner: ' + esc(c.winner) : ''}</small></span><span class="live">View</span></a>`).join('') || '<p class="muted">No contests yet — check back soon.</p>'}</div>`;
+  return { html, mount(v) { $('#nc', v)?.addEventListener('submit', guard(async e => { e.preventDefault(); const r = await api('/admin/contests', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); location.hash = '#/contests/' + r.id; })); } };
+});
 })();

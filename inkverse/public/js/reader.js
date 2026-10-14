@@ -78,6 +78,9 @@ const pollHtml = (p) => { if (!p) return ''; const total = p.options.reduce((a, 
   return `<div class="card poll" data-poll="${p.id}"><b>🗳 ${esc(p.question)}</b><small class="muted"> — help decide where the story goes</small>${p.options.map((o, i) => { const pc = total ? Math.round(o.votes / total * 100) : 0;
     return `<button class="poll-opt ${p.mine === i ? 'mine' : ''}" data-i="${i}"><span class="bar" style="width:${pc}%"></span><span class="lbl">${p.mine === i ? '✓ ' : ''}${esc(o.text)}</span><span class="pct">${pc}%</span></button>`; }).join('')}<small class="muted">${total} vote${total === 1 ? '' : 's'}${S.user ? '' : ' · log in to vote'}</small></div>`; };
 
+const qaHtml = (list, ctx) => list.map(q => `<div class="card" style="margin-bottom:10px;padding:12px 16px"><b>Q:</b> ${esc(q.question)} <small class="muted">— ${esc(q.username)}${q.answer ? '' : ' · waiting for an answer'}</small>
+  ${q.answer ? `<div style="margin-top:6px;border-left:4px solid var(--green);padding-left:10px"><b>A:</b> ${esc(q.answer)}</div>` : ctx.creator ? `<form class="row" data-ans="${q.id}" style="margin-top:8px"><input name="a" maxlength="1000" placeholder="Answer…" style="flex:1;padding:8px 12px;border-radius:99px;border:1px solid var(--line);background:var(--bg)"><button class="btn small">Answer</button></form>` : ''}</div>`).join('') || '<p class="muted">No answered questions yet.</p>';
+
 const adHtml = () => S.user?.premium ? '' : `<div class="ad"><small>Ad · free plan</small><div class="row" style="justify-content:space-between"><span>📖 Read without ads, highlight without limits and unlock early chapters.</span><a class="btn small" href="#/premium">Try Premium</a></div></div>`;
 
 // ---------------- the reader page ----------------
@@ -104,14 +107,16 @@ on(/^\/read\/(\d+)$/, async m => {
   }
 
   const online = !c._offline;
-  const [comments, poll, hlsInit] = await Promise.all([
+  const [comments, poll, hlsInit, qa] = await Promise.all([
     online ? api(`/chapters/${c.id}/comments`).catch(() => []) : [], online ? api(`/chapters/${c.id}/poll`).catch(() => null) : null,
-    online && S.user ? api(`/chapters/${c.id}/highlights`).catch(() => []) : []]);
+    online && S.user ? api(`/chapters/${c.id}/highlights`).catch(() => []) : [], online ? api(`/chapters/${c.id}/qa`).catch(() => []) : []]);
   const ctx = { creator: S.user && (S.user.id === c.creator_id || S.user.role === 'admin'), me: S.user?.id };
   const note = c.author_note ? `<div class="card" style="max-width:760px;margin:24px auto 0;border-left:5px solid var(--green)"><b>✍️ Note from ${esc(c.creator)}</b><p style="margin-top:6px;white-space:pre-line">${esc(c.author_note)}</p></div>` : '';
   const reacts = `<div class="row" id="reacts" style="justify-content:center;margin:24px 0 0">${S.cfg.reactions.map(e => `<button class="chip ${c.mine?.includes(e) ? 'active' : ''}" data-e="${e}" style="font-size:18px">${e} <span>${c.reactions?.[e] || 0}</span></button>`).join('')}</div>`;
   const end = `${note}${reacts}<div class="wrap" style="max-width:760px"><div id="pollbox">${pollHtml(poll)}</div>${ctx.creator && online ? '<p style="margin-top:10px"><button class="btn ghost small" id="newpoll">🗳 Add a poll to this chapter</button></p>' : ''}
   <div class="row" style="justify-content:center;margin:20px 0 14px">${c.prev ? `<a class="btn ghost" href="#/read/${c.prev}">‹ Previous</a>` : ''}${c.next ? `<a class="btn" href="#/read/${c.next}">Next chapter ›</a>` : `<a class="btn" href="#/series/${c.series_id}">Back to series</a>`}</div>${adHtml()}
+  <div class="section-head" style="margin-top:20px"><h2>🙋 Ask ${esc(c.creator)}</h2><span class="muted">Questions about this chapter</span></div>
+  <div id="qa">${qaHtml(qa, ctx)}</div>${online ? `<form class="row" id="qaf" style="margin:10px 0"><input name="q" maxlength="300" placeholder="${S.user ? 'Ask the creator a question…' : 'Log in to ask a question'}" style="flex:1;min-width:200px;padding:10px 14px;border-radius:99px;border:1px solid var(--line);background:var(--bg)"><button class="btn small">Ask</button></form>` : ''}
   <div class="section-head" style="margin-top:20px"><h2>💬 Comments</h2><span class="muted">Moderated · tag spoilers with ||text||</span></div>
   <form class="form" id="cmf" style="margin-bottom:10px"><textarea name="b" maxlength="2000" placeholder="${S.user ? 'Share your thoughts…' : 'Log in to comment'}" style="min-height:70px"></textarea><div><button class="btn small">Post comment</button></div></form>
   <div id="cml">${comments.map(x => commentHtml(x, ctx)).join('') || '<p class="muted">Be the first to comment.</p>'}</div></div>`;
@@ -328,6 +333,8 @@ on(/^\/read\/(\d+)$/, async m => {
       const rep = e.target.closest('[data-rep]'); if (rep && needLogin()) return reportModal('comment', +rep.dataset.rep);
       const pin = e.target.closest('[data-pin]'); if (pin) { await api(`/comments/${pin.dataset.pin}/pin`, { method: 'POST' }); IV.route(); }
       const del = e.target.closest('[data-del]'); if (del && confirm('Delete this comment?')) { await api(`/comments/${del.dataset.del}`, { method: 'DELETE' }); del.closest('.comment').remove(); } }));
+    $('#qaf', v)?.addEventListener('submit', guard(async e => { e.preventDefault(); if (!needLogin()) return; await api(`/chapters/${c.id}/qa`, { method: 'POST', body: { question: e.target.q.value } }); e.target.q.value = ''; $('#qa', v).innerHTML = qaHtml(await api(`/chapters/${c.id}/qa`), ctx); toast('Question sent — you will be notified when it is answered.', 'ok'); }));
+    $('#qa', v).addEventListener('submit', guard(async e => { const f = e.target.closest('[data-ans]'); if (!f) return; e.preventDefault(); await api(`/qa/${f.dataset.ans}/answer`, { method: 'POST', body: { answer: f.a.value } }); $('#qa', v).innerHTML = qaHtml(await api(`/chapters/${c.id}/qa`), ctx); toast('Answer published', 'ok'); }));
     bindSpoilers(v);
     document.addEventListener('click', function away(e) { if (!$('#rbar')) return document.removeEventListener('click', away); if (!e.target.closest('#panel,#set')) $('#panel') && ($('#panel').hidden = true); if (!e.target.closest('#hlpop,mark,.hl-box')) $('#hlpop')?.remove(); });
 

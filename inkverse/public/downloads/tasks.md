@@ -133,3 +133,16 @@ Run the automated checks with `npm test`.
 - [ ] Translation workflow (community or AI-assisted with human approval), auto-lettering
 - [ ] Membership tiers / merch / commission board, contests with cash prizes
 - [ ] Native apps and CDN image delivery; creator audience demographics (needs consent-based data collection)
+
+## Phase 11 — v4: protection, community, money safety
+- [x] **Paid comic pages never exposed as public files** — signed 6-hour links bound to reader + chapter, served with a per-reader watermark (`server/protect.js`)
+- [x] **Refund & chargeback handling** — `charge.refunded` / `charge.dispute.created` claw coins back (idempotent, ledger entry, notification); refunded Premium invoices end Premium
+- [x] Written **reviews** (stars + text, helpful votes, must-have-read, reportable, keeps headline rating in sync)
+- [x] Chapter **Q&A** (reader asks, creator answers publicly, notifications)
+- [x] Public **creator profiles** + **follow creators** (alerts when they publish a new series)
+- [x] **Contests** judged by reader votes (admin creates/closes, auto-close, one entry per creator, anti-abuse voting rules)
+- [x] Opt-in **email alerts** for new chapters (one digest per person per cycle; needs SMTP + confirmed email)
+- [x] Creator **earnings CSV export** (formula-injection safe)
+- [x] Root README with manual go-live checklist and env reference
+- [ ] Stripe Connect / PayPal automatic creator payouts · NSFW/CSAM image scanning · web-wide reverse image search
+

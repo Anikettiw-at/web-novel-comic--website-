@@ -42,6 +42,18 @@ function mountWebhook(app) {
       if (obj.customer && end && obj.amount_paid > 0) db.prepare('UPDATE users SET plan_until=MAX(plan_until,?), sub_cancel=0 WHERE stripe_customer=?').run(end * 1000 + 86400000, obj.customer);
       return res.json({ received: true });
     }
+    if (event.type === 'charge.refunded' || event.type === 'charge.dispute.created') {            // money went back to the buyer: claw the coins back / end Premium
+      const pi = obj.payment_intent, full = event.type === 'charge.dispute.created' || (obj.amount_refunded >= obj.amount && obj.amount > 0);
+      const row = pi && db.prepare('SELECT * FROM stripe_payments WHERE payment_intent=? AND reversed=0').get(pi);
+      if (row && full) db.transaction(() => {
+        db.prepare('UPDATE stripe_payments SET reversed=1 WHERE session_id=?').run(row.session_id);
+        db.prepare('UPDATE users SET coins=coins-? WHERE id=?').run(row.coins, row.user_id);   // may go negative: blocks spending until topped up
+        db.prepare('INSERT INTO transactions(user_id,type,coins,cents,note,created_at) VALUES(?,?,?,?,?,?)').run(row.user_id, 'refund', -row.coins, -row.cents, 'Refund/dispute ' + row.session_id, now());
+        db.prepare('INSERT INTO notifications(user_id,text,link,created_at) VALUES(?,?,?,?)').run(row.user_id, `A payment was refunded, so ${row.coins} coins were removed from your wallet.`, '#/wallet', now());
+      })();
+      else if (!row && full && obj.customer) db.prepare('UPDATE users SET plan_until=?, sub_cancel=0 WHERE stripe_customer=? AND plan_until>?').run(now(), obj.customer, now());   // refunded Premium invoice
+      return res.json({ received: true });
+    }
     if (event.type === 'customer.subscription.deleted') { db.prepare('UPDATE users SET plan_until=?, sub_cancel=0, stripe_sub=NULL WHERE stripe_customer=?').run(now(), obj.customer); return res.json({ received: true }); }
     if (event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') {
       const s = obj;
@@ -56,6 +68,7 @@ function mountWebhook(app) {
       db.transaction(() => {
         if (db.prepare('INSERT OR IGNORE INTO stripe_events(id,created_at) VALUES(?,?)').run(s.id, now()).changes === 0) return; // replay
         db.prepare('UPDATE users SET coins=coins+? WHERE id=?').run(pack.coins, uid);
+        db.prepare('INSERT OR IGNORE INTO stripe_payments(session_id,payment_intent,user_id,coins,cents,created_at) VALUES(?,?,?,?,?,?)').run(s.id, s.payment_intent || null, uid, pack.coins, pack.cents, now());
         db.prepare('INSERT INTO transactions(user_id,type,coins,cents,note,created_at) VALUES(?,?,?,?,?,?)').run(uid, 'purchase', pack.coins, pack.cents, 'Stripe payment ' + s.id, now());
         db.prepare('INSERT INTO notifications(user_id,text,link,created_at) VALUES(?,?,?,?)').run(uid, `Payment received: ${pack.coins} coins added to your wallet.`, '#/wallet', now());
       })();

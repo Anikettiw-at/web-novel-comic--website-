@@ -316,3 +316,5 @@ mark.hl.has-note { border-bottom: 2px dotted currentColor; }
   .burger { display: inline-flex; } .search input, .search input:focus { width: 130px; }
 }
 .form label.chip { display: inline-flex; width: auto; align-items: center; }
+
+.chapter.winner { border-color: #ffd23f; background: color-mix(in srgb, #ffd23f 14%, var(--card)); }

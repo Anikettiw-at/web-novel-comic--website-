@@ -68,6 +68,7 @@ All optional locally. Copy `.env.example` to `.env` and run `npm run start:env` 
 | `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS` `SMTP_SECURE` | – | **Yes** for password reset | Any SMTP provider (Brevo, Resend, Mailgun, SendGrid, Gmail app password) |
 | `MAIL_FROM` | `SMTP_USER` | recommended | e.g. `InkVerse <no-reply@yourdomain.com>` |
 | `BACKUP_KEEP` | `7` | no | Daily DB backups kept in `DATA_DIR/backups` |
+| `email_notify` (profile) | – | – | Users can opt in to new-chapter emails (needs SMTP + confirmed email) |
 | `REQUIRE_VERIFIED` | `false` | recommended with SMTP | `true` = creators must confirm their email before publishing and anyone must before buying coins |
 
 Business rules (revenue split, payout minimum, coin packs, check-in rewards) live in `server/db.js → RULES` and are also shown in the UI automatically.
@@ -156,7 +157,7 @@ Back up `DATA_DIR` (database + secret) and `UPLOAD_DIR` nightly. For a consisten
 - [ ] Add transactional email (password reset, removal notices)
 
 ## 5. Going to production with real payments
-The demo endpoints are `POST /api/wallet/buy` (coin purchase), the demo Premium grant in `POST /api/premium/subscribe`, and the admin "Mark paid" payout button. With `STRIPE_SECRET_KEY` set, coins **and Premium** use Stripe Checkout; add the webhook events `checkout.session.completed`, `invoice.paid` and `customer.subscription.deleted`.
+The demo endpoints are `POST /api/wallet/buy` (coin purchase), the demo Premium grant in `POST /api/premium/subscribe`, and the admin "Mark paid" payout button. With `STRIPE_SECRET_KEY` set, coins **and Premium** use Stripe Checkout; add the webhook events `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `invoice.paid`, `customer.subscription.deleted`, `charge.refunded` and `charge.dispute.created` (the last two claw back coins / end Premium on refunds and chargebacks).
 
 1. **Coin purchase:** create a Stripe Checkout Session per coin pack; on the `checkout.session.completed` **webhook** (verify the signature) run the same logic as `/api/wallet/buy` (credit coins + `transactions` row). Remove the demo endpoint.
 2. **Payouts:** use Stripe Connect or PayPal Payouts. In `POST /api/admin/payouts/:id` (approve) trigger the real transfer first, then mark paid.
@@ -177,6 +178,8 @@ server/
   moderation.js   text screening, strikes, reports
   copyright.js    upload fingerprinting, protected registry, review queue, ownership proof
   features.js     premium, highlights, prefs/history, charts, polls, creator tools
+  community.js    reviews, Q&A, creator profiles, contests, earnings CSV
+  protect.js      signed + watermarked delivery of paid comic pages
   db.js           schema + business RULES
   seed.js         demo / production seeding
   smoke-test.js   end-to-end tests (npm test)
@@ -187,7 +190,7 @@ design.md  tasks.md  README.md  Dockerfile  .env.example
 ```
 
 ## 8. API overview
-Auth `POST /api/auth/register|login` · `GET/PATCH /api/me` · Catalogue `GET /api/series`, `/api/series/:id`, `/api/chapters/:id` · Creator `POST /api/series`, `/api/series/:id/chapters`, `/chapters/bulk`, `GET /api/creator/dashboard|analytics`, `POST /api/creator/payout` · Money `GET /api/wallet`, `POST /api/wallet/buy`, `/api/chapters/:id/unlock`, `/api/tip` · Community `GET/POST /api/channels`, WebSocket `/ws`, `POST /api/report`, `/api/appeals` · Admin `GET/POST /api/admin/*` · Engagement `POST /api/checkin`, `GET /api/recommendations`, `/api/me/badges` · **v3** Premium `GET /api/premium`, `POST /api/premium/subscribe|cancel`, `/api/chapters/:id/premium-unlock` · Highlights `GET/POST /api/chapters/:id/highlights`, `PATCH/DELETE /api/highlights/:id`, `GET /api/highlights` · Reader `GET/PUT /api/me/prefs`, `POST /api/chapters/:id/progress`, `GET /api/history` · Discovery `GET /api/charts`, `/api/series/:id/related` · Creator `PATCH/DELETE /api/chapters/:id`, `GET /api/creator/series/:id/retention`, `/api/creator/comments`, `POST /api/chapters/:id/poll`, `GET /api/chapters/:id/proof` · Copyright `POST /api/copyright/check-text`, admin `GET /api/admin/copyright`, `POST /api/admin/copyright/protect|:id` · Account `POST /api/auth/change-password|logout-all|verify-email`, `GET /api/me/export`, `DELETE /api/me` · Ops `GET /healthz`.
+Auth `POST /api/auth/register|login` · `GET/PATCH /api/me` · Catalogue `GET /api/series`, `/api/series/:id`, `/api/chapters/:id` · Creator `POST /api/series`, `/api/series/:id/chapters`, `/chapters/bulk`, `GET /api/creator/dashboard|analytics`, `POST /api/creator/payout` · Money `GET /api/wallet`, `POST /api/wallet/buy`, `/api/chapters/:id/unlock`, `/api/tip` · Community `GET/POST /api/channels`, WebSocket `/ws`, `POST /api/report`, `/api/appeals` · Admin `GET/POST /api/admin/*` · Engagement `POST /api/checkin`, `GET /api/recommendations`, `/api/me/badges` · **v3** Premium `GET /api/premium`, `POST /api/premium/subscribe|cancel`, `/api/chapters/:id/premium-unlock` · Highlights `GET/POST /api/chapters/:id/highlights`, `PATCH/DELETE /api/highlights/:id`, `GET /api/highlights` · Reader `GET/PUT /api/me/prefs`, `POST /api/chapters/:id/progress`, `GET /api/history` · Discovery `GET /api/charts`, `/api/series/:id/related` · Creator `PATCH/DELETE /api/chapters/:id`, `GET /api/creator/series/:id/retention`, `/api/creator/comments`, `POST /api/chapters/:id/poll`, `GET /api/chapters/:id/proof` · Copyright `POST /api/copyright/check-text`, admin `GET /api/admin/copyright`, `POST /api/admin/copyright/protect|:id` · Account `POST /api/auth/change-password|logout-all|verify-email`, `GET /api/me/export`, `DELETE /api/me` · **v4** Reviews `GET/POST /api/series/:id/reviews`, `POST /api/reviews/:id/helpful`, `DELETE /api/reviews/:id` · Q&A `GET/POST /api/chapters/:id/qa`, `POST /api/qa/:id/answer` · Creators `GET /api/creators/:id`, `POST /api/creators/:id/follow` · Contests `GET /api/contests[/:id]`, `POST /api/contests/:id/enter|vote`, admin `POST /api/admin/contests[/:id/close]` · Paid pages `GET /pages/:chapterId/:n?k=…` (signed, watermarked) · Export `GET /api/creator/earnings.csv` · Ops `GET /healthz`.
 
 ## 9. Troubleshooting
 | Problem | Fix |

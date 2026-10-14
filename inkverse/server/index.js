@@ -13,6 +13,7 @@ const { db, RULES } = require('./db');
 const { screenText, fileReport, addStrike } = require('./moderation');
 const payments = require('./payments');
 const copyright = require('./copyright');
+const { sendMail } = require('./account');
 
 const PORT = process.env.PORT || 3000;
 const DAY = 24 * 3600 * 1000;
@@ -54,7 +55,7 @@ const authLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 30, message: { err
 const wrap = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 const fail = (res, code, error) => res.status(code).json({ error });
 const publicUser = u => u && ({ id: u.id, username: u.username, role: u.role, bio: u.bio, adult: !!u.adult, coins: u.coins,
-  payout_email: u.payout_email, tax_ok: !!u.tax_ok, streak: u.streak, can_checkin: u.last_checkin !== Math.floor(Date.now() / DAY), strikes: u.strikes, muted_until: u.muted_until, created_at: u.created_at,
+  payout_email: u.payout_email, tax_ok: !!u.tax_ok, streak: u.streak, can_checkin: u.last_checkin !== Math.floor(Date.now() / DAY), strikes: u.strikes, muted_until: u.muted_until, created_at: u.created_at, email_notify: !!u.email_notify,
   premium: u.plan_until > Date.now(), plan_until: u.plan_until || null, sub_cancel: !!u.sub_cancel, email_verified: !!u.email_verified });
 const userFromToken = token => {
   try {
@@ -137,11 +138,11 @@ app.post('/api/auth/login', authLimiter, wrap(async (req, res) => {
 app.get('/api/me', needAuth, (req, res) => res.json(publicUser(req.user)));
 app.patch('/api/me', needAuth, (req, res) => {
   const b = req.body, u = req.user;
-  db.prepare('UPDATE users SET bio=?, adult=?, payout_email=?, tax_ok=? WHERE id=?').run(
+  db.prepare('UPDATE users SET bio=?, adult=?, payout_email=?, tax_ok=?, email_notify=? WHERE id=?').run(
     b.bio !== undefined ? clean(b.bio, 300) : u.bio,
     b.adult !== undefined ? (b.adult ? 1 : 0) : u.adult,
     b.payout_email !== undefined ? clean(b.payout_email, 120) || null : u.payout_email,
-    b.tax_ok !== undefined && u.role !== 'reader' ? (b.tax_ok ? 1 : 0) : u.tax_ok, u.id);
+    b.tax_ok !== undefined && u.role !== 'reader' ? (b.tax_ok ? 1 : 0) : u.tax_ok, b.email_notify !== undefined ? (b.email_notify ? 1 : 0) : u.email_notify, u.id);
   res.json(publicUser(db.prepare('SELECT * FROM users WHERE id=?').get(u.id)));
 });
 app.post('/api/me/become-creator', needAuth, (req, res) => {
@@ -358,7 +359,7 @@ app.get('/api/chapters/:id', (req, res) => {
   const reactions = Object.fromEntries(db.prepare('SELECT emoji, COUNT(*) n FROM reactions WHERE chapter_id=? GROUP BY emoji').all(c.id).map(r => [r.emoji, r.n]));
   const mine = req.user ? db.prepare('SELECT emoji FROM reactions WHERE chapter_id=? AND user_id=?').all(c.id, req.user.id).map(r => r.emoji) : [];
   const resume = req.user ? db.prepare('SELECT page, pct FROM progress WHERE user_id=? AND chapter_id=?').get(req.user.id, c.id) : null;
-  res.json({ ...base, content: c.content, pages: c.pages ? JSON.parse(c.pages) : null, author_note: c.author_note, reactions, mine, resume,
+  res.json({ ...base, content: c.content, pages: c.pages ? protect.signPages(c, JSON.parse(c.pages), req.user) : null, author_note: c.author_note, reactions, mine, resume,
     protect: c.price_coins > 0 });   // paid chapters get copy protection + reader watermark on the client
 });
 
@@ -455,7 +456,7 @@ app.delete('/api/channels/:id', needAuth, (req, res) => {
 
 // ---------- reports & DMCA ----------
 app.post('/api/report', needAuth, (req, res) => {
-  const type = req.body.target_type; if (!['message', 'comment', 'series', 'user'].includes(type)) return fail(res, 400, 'Bad target.');
+  const type = req.body.target_type; if (!['message', 'comment', 'series', 'user', 'review'].includes(type)) return fail(res, 400, 'Bad target.');
   const r = fileReport({ reporterId: req.user.id, targetType: type, targetId: Number(req.body.target_id), reason: clean(req.body.reason || 'Unspecified', 300) });
   if (r.autoHidden && type === 'message') broadcastHide(Number(req.body.target_id));
   res.json({ ok: true, duplicate: !!r.duplicate });
@@ -546,6 +547,7 @@ app.get('/api/admin/reports', admin, (req, res) => {
   const ctx = r => {
     if (r.target_type === 'message') return db.prepare('SELECT m.body, m.status, u.username author, m.user_id, m.channel_id FROM messages m JOIN users u ON u.id=m.user_id WHERE m.id=?').get(r.target_id);
     if (r.target_type === 'comment') return db.prepare('SELECT c.body, c.status, u.username author, c.user_id FROM comments c JOIN users u ON u.id=c.user_id WHERE c.id=?').get(r.target_id);
+    if (r.target_type === 'review') return db.prepare('SELECT v.body, v.status, u.username author, v.user_id FROM reviews v JOIN users u ON u.id=v.user_id WHERE v.id=?').get(r.target_id);
     if (r.target_type === 'series') return db.prepare('SELECT title AS body, status, creator_id AS user_id FROM series WHERE id=?').get(r.target_id);
     return db.prepare('SELECT username author, id user_id FROM users WHERE id=?').get(r.target_id);
   };
@@ -556,10 +558,12 @@ app.post('/api/admin/reports/:id', admin, (req, res) => {
   const action = req.body.action; let authorId = null;
   if (r.target_type === 'message') { authorId = db.prepare('SELECT user_id FROM messages WHERE id=?').get(r.target_id)?.user_id; }
   if (r.target_type === 'comment') { authorId = db.prepare('SELECT user_id FROM comments WHERE id=?').get(r.target_id)?.user_id; }
+  if (r.target_type === 'review') authorId = db.prepare('SELECT user_id FROM reviews WHERE id=?').get(r.target_id)?.user_id;
   if (r.target_type === 'user') authorId = r.target_id;
   if (['hide', 'warn', 'ban'].includes(action)) {
     if (r.target_type === 'message') { db.prepare("UPDATE messages SET status='hidden' WHERE id=?").run(r.target_id); broadcastHide(r.target_id); }
     if (r.target_type === 'comment') db.prepare("UPDATE comments SET status='hidden' WHERE id=?").run(r.target_id);
+    if (r.target_type === 'review') db.prepare("UPDATE reviews SET status='hidden' WHERE id=?").run(r.target_id);
     if (r.target_type === 'series' && action === 'hide') db.prepare("UPDATE series SET status='removed' WHERE id=?").run(r.target_id);
     const target = authorId && db.prepare('SELECT * FROM users WHERE id=?').get(authorId);
     if (target && target.role !== 'admin') {
@@ -615,7 +619,10 @@ app.post('/api/admin/users/:id', admin, (req, res) => {
 const audit = (req, action, target) => db.prepare('INSERT INTO audit(admin_id,action,target,created_at) VALUES(?,?,?,?)').run(req.user.id, action, String(target), now());
 payments.mountRoutes(app, { needAuth, fail, needVerified });
 require('./account').mount(app, { authLimiter, fail, needAuth, publicUser, sign });
+const protect = require('./protect')({ SECRET, upDir });
+protect.mount(app);
 copyright.mount(app, { needRole, fail, clean, notify, audit, secret: SECRET, upDir: upDir });
+const community = require('./community')(app, { needAuth, needRole, needVerified, fail, clean, notify, audit, seriesSelect, shapeSeries, chapterAccess });
 require('./features')(app, { needAuth, needRole, fail, clean, notify, audit, seriesSelect, shapeSeries, chapterAccess, paymentsMode: payments.paymentsMode, stripeCall: payments.stripeCall });
 require('./advanced')(app, { needAuth, needRole, fail, clean, notify, audit, seriesSelect, shapeSeries });
 
@@ -688,14 +695,25 @@ wss.on('connection', ws => {
 });
 
 // ---------- scheduler: notify followers when chapters go live ----------
-function releaseTick() {
-  const due = db.prepare("SELECT c.id,c.number,c.title,c.series_id,s.title st FROM chapters c JOIN series s ON s.id=c.series_id WHERE c.notified=0 AND c.draft=0 AND c.review='ok' AND c.publish_at<=?").all(now());
+async function releaseTick() {
+  const due = db.prepare("SELECT c.id,c.number,c.title,c.series_id,s.title st,s.creator_id,u.username creator FROM chapters c JOIN series s ON s.id=c.series_id JOIN users u ON u.id=s.creator_id WHERE c.notified=0 AND c.draft=0 AND c.review='ok' AND c.publish_at<=?").all(now());
+  const mail = new Map();   // userId -> lines for ONE digest email per person per tick
+  const base = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
   for (const c of due) {
     db.prepare('UPDATE chapters SET notified=1 WHERE id=?').run(c.id);
-    for (const f of db.prepare('SELECT user_id FROM follows WHERE series_id=?').all(c.series_id)) notify(f.user_id, `New chapter: ${c.st} — #${c.number} ${c.title}`, `#/read/${c.id}`);
+    for (const f of db.prepare('SELECT user_id FROM follows WHERE series_id=?').all(c.series_id)) {
+      notify(f.user_id, `New chapter: ${c.st} — #${c.number} ${c.title}`, `#/read/${c.id}`);
+      (mail.get(f.user_id) || mail.set(f.user_id, []).get(f.user_id)).push(`${c.st} — chapter ${c.number}: ${c.title}\n${base}/#/read/${c.id}`);
+    }
+    if (c.number === 1) for (const f of db.prepare('SELECT user_id FROM creator_follows WHERE creator_id=?').all(c.creator_id)) notify(f.user_id, `${c.creator} published a new series: ${c.st}`, `#/series/${c.series_id}`);
   }
+  for (const [uid, lines] of mail) {
+    const u = db.prepare('SELECT username,email FROM users WHERE id=? AND email_notify=1 AND email_verified=1 AND banned=0').get(uid); if (!u) continue;
+    await sendMail({ to: u.email, subject: lines.length === 1 ? 'New chapter on InkVerse' : `${lines.length} new chapters on InkVerse`, text: `Hi ${u.username},\n\n${lines.join('\n\n')}\n\nTurn these emails off any time in your profile menu on InkVerse.` }).catch(e => console.error('mail error', e.message));
+  }
+  community.tick();
 }
-setInterval(releaseTick, 30_000); releaseTick();
+setInterval(() => releaseTick().catch(e => console.error('tick failed', e.message)), 30_000); releaseTick().catch(e => console.error('tick failed', e.message));
 
 require('./seed').run();
 copyright.backfill().catch(e => console.error('fingerprint backfill failed', e.message));
@@ -712,4 +730,4 @@ async function backupTick() {
 if (require.main === module) { backupTick(); setInterval(backupTick, 6 * 3600_000); }
 
 if (require.main === module) server.listen(PORT, () => console.log(`InkVerse running → http://localhost:${PORT}`));
-module.exports = { app, server };
+module.exports = { app, server, releaseTick };
